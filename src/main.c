@@ -12,7 +12,7 @@ int main(void) {
     init();
 
     while(1) {
-        // event loop
+        tick();
 
         //if something is pressed
         break;
