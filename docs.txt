@@ -1,0 +1,19 @@
+// Libraries
+
+#include <windows.h>  // core Windows API
+#include <stdbool.h>  // bool type
+#include <stdint.h>   // optional, for fixed-width integers
+
+// Flow
+
+1. Initialize the game
+    - Create a memory pool sized: 192MB
+    - Load the map, player, entities, stats
+    - Make a window and draw everything there
+    - Check the CPU hz count
+    - Start the timer based off CPU hz count
+2. Run the game
+    - Wait
+3. End the game
+    - Return to 0 for Windows
+
