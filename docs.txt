@@ -9,9 +9,9 @@
 1. Initialize the game
     - Create a memory pool sized: 192MB
     - Load the map, player, entities, stats
-    - Make a window and draw everything there
     - Check the CPU hz count
     - Start the timer based off CPU hz count
+    - Make a window and draw everything there
 2. Run the game
     - Wait
 3. End the game
