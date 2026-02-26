@@ -16,4 +16,4 @@ typedef struct {
     uint32_t MEMORY_USED;
 }
 
-// Global state structure for the game
+// Global state structure for the gam
