@@ -2,7 +2,7 @@
 
 #define MEMORY_SIZE_ARR (192 * 1024 * 1024) // 192 MiB
 
-#include "init.h"
+#include "INITIALIZATION/init.h"
 
 #include <windows.h>
 #include <stdbool.h>
@@ -16,4 +16,6 @@ typedef struct {
     uint32_t MEMORY_USED;
 }
 
-// Global state structure for the gam
+void initialization(void) {
+    // ALLE THE INITIALIZATION FUNCTIONS GO HERE
+}
