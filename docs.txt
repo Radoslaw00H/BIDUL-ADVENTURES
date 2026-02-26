@@ -1,19 +1,112 @@
-// Libraries
+This is the expanded, high-detail blueprint. We are treating the **192MiB** as a literal physical slab of silicon memory—no abstractions, just direct pointer math and offsets.
 
-#include <windows.h>  // core Windows API
-#include <stdbool.h>  // bool type
-#include <stdint.h>   // optional, for fixed-width integers
+---
 
-// Flow
+## 📂 File Structure & Asset Manifest
 
-1. Initialize the game
-    - Create a memory pool sized: 192MB
-    - Load the map, player, entities, stats
-    - Check the CPU hz count
-    - Start the timer based off CPU hz count
-    - Make a window and draw everything there
-2. Run the game
-    - Wait
-3. End the game
-    - Return to 0 for Windows
+### **Folders**
 
+* **`/WindowsAPI_HANDLER`**: The "Platform Layer."
+* `win32_platform.c`: Handles `WinMain`, `WndProc`, and the **DIB Section** (the bridge between your memory and the screen).
+
+
+* **`/graphics`**: Raw 24-bit/32-bit BMPs.
+* `sky_env.bmp`: 360° Wrap-around horizon.
+* `tex_wall_01.bmp` to `tex_wall_08.bmp`: Environment textures.
+* `spr_gun_idle.bmp` / `spr_gun_fire.bmp`: Player viewmodel (centered).
+* `ui_hud_base.bmp`: The status bar template.
+* `fnt_digital.bmp`: A 0-9 sprite sheet for health/ammo stats.
+
+
+* **`/soundtracks`**: Raw PCM WAV files.
+* `m_menu.wav`: Looping menu theme.
+* `m_combat.wav`: In-game music.
+* `s_fire.wav` / `s_death.wav`: SFX.
+
+
+
+---
+
+## 🕹️ The Refined 3-Step Flow
+
+### **1. Initialize the Game (The Hardware Handshake)**
+
+* **Memory Pool Setup:** Allocate **192MiB** via `VirtualAlloc`.
+* **Partitioning:** * `000-064MB`: **Static Assets** (Textures/Sounds).
+* `064-128MB`: **The Backbuffer** (ARGB pixel array for the 165Hz display).
+* `128-144MB`: **The Z-Buffer** (Stores depth for every pixel to handle sprite clipping).
+* `144-192MB`: **The World State** (Map grid, entity positions, pathfinding nodes).
+
+
+
+
+* **High-Frequency Clock:** Call `QueryPerformanceFrequency`.
+* Calculate `Target_Ticks = Frequency / 165`.
+
+
+* **Window Creation:** Open a window using `StretchDIBits`. This allows the CPU to "blast" your 128MB backbuffer directly to the GPU's front buffer.
+
+### **2. Run the Game (The 165Hz "Heartbeat")**
+
+This loop must be razor-sharp. If a frame takes longer than 6.06ms, the game feels "heavy."
+
+* **Logic & Physics:**
+* **Entity Pulse:** Iterate through the entity list. Check `Dist(Player, Entity)`. If < 0.2, trigger collision.
+* **Update Map/Player:** Apply $Velocity \times DeltaTime$. Check the Map Grid. If the target cell is `> 0` (a wall), stop movement on that axis.
+
+
+* **The "Add-On" Rendering (The Doom Effect):**
+* **DDA Raycasting:** Cast a ray for every horizontal pixel.
+* **Z-Buffer Shading:** For every pixel rendered, write the distance to the Z-Buffer.
+* **Floor/Ceiling Texturing:** Once a wall is hit, use the remaining vertical screen space to calculate "Floor Projections." Map a texture to the ground based on the player's height and tilt.
+* **Sector Lighting:** Every map cell has a `Light_Level (0.0 to 1.0)`. Multiply the final pixel color by `(Cell_Light / Distance)`. This allows for flickering lights and dark corridors.
+
+
+* **HUD Overlay:** Blit the `ui_hud_base.bmp` and the `spr_gun` over the 3D view.
+* **The Wait:** Use a `while` loop with an `_mm_pause()` (x86 assembly) until the `Target_Ticks` are met. This keeps the 165Hz perfectly stable.
+
+### **3. End the Game (Termination)**
+
+* **Break Loop:** On "Exit" click, stop the music thread.
+* **Clean Release:** `VirtualFree` the 192MiB pool.
+* **Return 0:** Signal Windows that the process ended successfully.
+
+---
+
+## 🖥️ CLI_ALT (The Terminal Ghost)
+
+* **Mode:** `STD_OUTPUT_HANDLE` only. No Windows GUI.
+* **Clock:** `Sleep(100)` (10Hz refresh).
+* **Visuals:** Uses a character ramp for depth: `@#W#*+=-:. `
+* **Logic:** A simplified version of the raycaster that outputs a single `char` per screen column instead of a pixel.
+
+---
+
+## 🛠️ Compilation BAT File (`build.bat`)
+
+This script compiles both the high-end game and the CLI version using the MSVC compiler.
+
+```batch
+@echo off
+if not exist "bin" mkdir bin
+
+:: --- Compile Main Doom-Like ---
+:: /O2: High optimization /Oi: Enable intrinsics /link: Windows Libs
+cl.exe /nologo /Zi /O2 src/main.c /Febin/game_165hz.exe /link user32.lib gdi32.lib winmm.lib
+
+:: --- Compile CLI Version ---
+cl.exe /nologo /O2 src/cli_alt.c /Febin/game_cli.exe
+
+echo Build Complete. Running Main Game...
+pause
+
+```
+
+---
+
+## 🧠 Technical "Pro-Tips" for Copilot/You
+
+* **Assembly Tip:** If the compiler tries to "unroll" your raycasting loop and ruins the cache performance, use `#pragma optimize("", off)` or wrap the inner loop in a naked `__asm` block for the DDA steps.
+* **Fixed Point Math:** Since you're on a single core, consider using **Fixed Point Arithmetic** (shifting integers) instead of `float` to keep the CPU's FPU (Floating Point Unit) from bottlenecking.
+IF TEXTURES NOT PROVIDED/AVAIBLE:
+This is the specialized extension for your OTF (On-The-Fly) Asset Engine. We are replacing static .bmp loading with Procedural Schematics. Since you have a 1GB overhead, we can bake massive amounts of detail into the 192MiB RAM pool at runtime, keeping the binary tiny but the visuals "natural."🎨 Procedural Texture Schematica (32-Color Naturalism)The 32-Color Master PaletteTo look "natural" rather than neon/arcade, the palette is divided into four Value Ramps. These are 8-step gradients used for distance-based color stepping (Lighting).Ramp TypePurposeHex Range ExampleStone/SlateWalls, Floors, Rubble8 shades: #0a0a0a (Deep) to #a0a0a8 (Light)Earthen/RustDirt, Bricks, Dried Blood8 shades: #1a0f00 to #8b4513Foliage/MossOvergrowth, Slime, Mold8 shades: #051a05 to #4a7023Industrial/TechMetal, Pipes, Lights8 shades: #00111a to #add8e6🛠️ The Texture "Bakers" (Schematics)Inside procedural_gen.c, we define the mathematical DNA for every surface.1. The Bitwise Brick (Schematic A)Instead of a flat red color, use a nested loop to define brick dimensions ($W \times H$).The Grout: If (x % brick_w < 2 || y % brick_h < 2), use the Stone Ramp (mortar).The Surface: If inside the brick, use a Xorshift Random hash: uint32_t noise = (x * 3731 ^ y * 8377) % 3; to pick between three neighboring shades in the Earthen Ramp. This creates "pitting" and natural grit.2. The Organic Stone (Schematic B)Uses a simplified Voronoi Diagram logic or Perlin-lite noise.The Veins: Define "control points" randomly. For every pixel, calculate the distance to the nearest two points.The Shading: If the distance difference is small, draw a "crack" using a dark shade from the Stone Ramp. Otherwise, use a mid-tone. This produces a cracked marble or jagged cave look.3. The "Pulse" Slime (Schematic C)Since this is OTF, we don't just bake it once; we can update it in the 165Hz loop.Math: ColorIndex = 16 + (sin(x * 0.1 + time) + cos(y * 0.1 + time)) * 4.Effect: This oscillates through the Foliage/Moss Ramp, making the wall appear to glow or ripple like radioactive waste.🕹️ OTF Logic Integration (The Flow)1. Initialize (The "Big Bake")Texture Atlas: Carve out a block in your 192MiB pool for 64 different textures ($128 \times 128$ pixels each).Generation: Run the Schematics once during the splash screen.MIP-Mapping: Bake "Smaller" versions ($64 \times 64$, $32 \times 32$) of each texture. When the Raycaster hits a wall far away, fetch from the small version to prevent Texture Shimmering (aliasing) on your single CPU core.2. Run (Lighting & Selection)The Ray Hit: When the DDA hits a wall, it returns a Texture_ID and a Hit_Coordinate.Natural Shading: * Take the pixel color from the baked atlas.Check the Z-Buffer distance."Step down" the color index. If the pixel is Stone_7 (bright) and distance is far, render it as Stone_2 (dark). This maintains the 32-color limit while creating 3D depth.3. CLI_ALT (ASCII Naturalism)The terminal version uses the same "Schematic" IDs:Brick Hit: Output # or W.Stone Hit: Output 8 or &.Slime Hit: Output ~ or *.Since the colors are generated on the fly, the ASCII engine knows exactly which "character ramp" to use based on the texture's material type.
