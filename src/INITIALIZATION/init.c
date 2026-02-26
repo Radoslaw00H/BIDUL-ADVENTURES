@@ -2,7 +2,7 @@
 
 #define MEMORY_SIZE_ARR (192 * 1024 * 1024) // 192 MiB
 
-#include "INITIALIZATION/init.h"
+#include "init.h"
 
 #include <windows.h>
 #include <stdbool.h>
@@ -10,12 +10,20 @@
 
 static uint8_t MEMORY[MEMORY_SIZE_ARR];
 
+// Memory allocator struct
 typedef struct {
     uint8_t* MEMORY;
     uint32_t MEMORY_SIZE;
     uint32_t MEMORY_USED;
-}
+} MemoryPool;
 
-void initialization(void) {
-    // ALLE THE INITIALIZATION FUNCTIONS GO HERE
+// Global memory pool
+static MemoryPool g_pool;
+
+// Initialize game: memory, clock, window
+void init(void) {
+    // Setup memory pool
+    g_pool.MEMORY = MEMORY;
+    g_pool.MEMORY_SIZE = MEMORY_SIZE_ARR;
+    g_pool.MEMORY_USED = 0;
 }
