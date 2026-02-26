@@ -39,13 +39,13 @@ int clock(void) {
 
 
 // all functions to pass to main
-tick(void) {
-    int CLOCK_CHECKER = 0;
+void tick(void) {
+    static int CLOCK_CHECKER = 0;
         if (CLOCK_CHECKER == 0) {
-        clock_init(void);
+        clock_init();
         CLOCK_CHECKER = 1;
     }
         else {
-        clock(void);    
+        clock();    
     }
 }
