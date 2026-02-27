@@ -63,6 +63,7 @@ void game_init(void) {
     g_player.health = 100.0;
     g_player.max_health = 100.0;
     g_player.shoot_cooldown = 0.0;
+    g_player.shoot_recoil = 0.0;  // Gun recoil animation state
     
     // World map init
     memset(g_world_map, 0, sizeof(g_world_map));
@@ -107,7 +108,7 @@ void game_cleanup(void) {
     g_projectiles = NULL;
 }
 
-// Spawn enemy entity
+// Spawn enemy entity with RECTANGLE dimensions
 void spawn_enemy(double x, double y, double z) {
     if (g_entity_count >= MAX_ENTITIES) return;
     
@@ -123,10 +124,13 @@ void spawn_enemy(double x, double y, double z) {
     e->attack_timer = 0.0;
     e->texture_id = 3 + (rand() % 5);  // Textures 3-7
     e->ai_angle = 0.0;
+    e->width = 1.5;   // Rectangle width
+    e->height = 2.5;  // Rectangle height (taller than wide)
+    e->bob_angle = 0.0;  // Animation bobbing angle
     g_entity_count++;
-}
+}}
 
-// Shoot projectile
+// Shoot projectile - RED, SLOW
 void player_shoot(void) {
     if (g_projectile_count >= MAX_PROJECTILES) return;
     if (g_player.shoot_cooldown > 0.0) return;
@@ -139,14 +143,19 @@ void player_shoot(void) {
     p->pos.x = g_player.pos.x + dx * 2.0;
     p->pos.y = g_player.pos.y + dy * 2.0;
     p->pos.z = g_player.pos.z + 0.5;
-    p->vel.x = dx * 80.0;
-    p->vel.y = dy * 80.0;
+    p->vel.x = dx * 30.0;  // Slower bullets (was 80)
+    p->vel.y = dy * 30.0;
     p->vel.z = 0.0;
-    p->lifetime = 3.0;
+    p->lifetime = 5.0;  // 5 seconds before despawn
     p->age = 0.0;
+    p->color_r = 255;  // RED BULLETS
+    p->color_g = 0;
+    p->color_b = 0;
     g_projectile_count++;
     
-    g_player.shoot_cooldown = 0.2;  // 200ms cooldown
+    // Gun recoil animation
+    g_player.shoot_recoil = 0.15;  // 150ms recoil
+    g_player.shoot_cooldown = 0.15;  // 150ms between shots
 }
 
 
@@ -260,9 +269,14 @@ void game_update(void) {
     // Rotation
     g_player.angle_yaw += g_turn_speed * dt;
     
-    // Update shoot cooldown
+    // Update shoot cooldown and recoil animation
     if (g_player.shoot_cooldown > 0.0) {
         g_player.shoot_cooldown -= dt;
+    }
+    // Recoil animation decay
+    if (g_player.shoot_recoil > 0.0) {
+        g_player.shoot_recoil -= dt / 0.15;  // Decay over 150ms
+        if (g_player.shoot_recoil < 0.0) g_player.shoot_recoil = 0.0;
     }
     
     // === PROJECTILES ===
@@ -322,13 +336,20 @@ void game_update(void) {
             continue;
         }
         
-        // AI: Chase player
+        // Animation: bobbing while moving
+        e->bob_angle += dt * 4.0;  // Bobbing speed
+        
+        // AI: Chase player with dynamic movement
         double dx = g_player.pos.x - e->pos.x;
         double dy = g_player.pos.y - e->pos.y;
         double dist = sqrt(dx * dx + dy * dy);
         
         if (dist > 0.1) {
-            double chase_speed = 15.0;
+            // More dynamic chase speed: varies between 12-18
+            double base_speed = 15.0;
+            double bob_mod = sin(e->bob_angle) * 3.0;  // Varies chase speed
+            double chase_speed = base_speed + bob_mod;
+            
             e->vel.x = (dx / dist) * chase_speed;
             e->vel.y = (dy / dist) * chase_speed;
             e->ai_angle = atan2(dy, dx);
@@ -337,7 +358,7 @@ void game_update(void) {
             e->vel.y *= 0.9;
         }
         
-        // Update position
+        // Update position with smooth movement
         double next_ex = e->pos.x + e->vel.x * dt;
         double next_ey = e->pos.y + e->vel.y * dt;
         
@@ -442,37 +463,104 @@ void game_render(uint32_t* backbuffer, int width, int height) {
         }
     }
     
-    // Draw GUN SPRITE at bottom center
-    int gun_x = width / 2 - 30;
+    // Draw DETAILED GUN SPRITE with recoil animation
+    // Recoil moves gun backward
+    int recoil_offset = (int)(g_player.shoot_recoil * 15.0);  // Recoil push
+    int gun_x = width / 2 - 30 - recoil_offset;
     int gun_y = height - 80;
     int gun_w = 60;
     int gun_h = 70;
     
-    // Gun body - dark gray
-    for (int y = gun_y; y < gun_y + gun_h; y++) {
-        for (int x = gun_x; x < gun_x + gun_w; x++) {
-            if (x < 0 || x >= width || y < 0 || y >= height) continue;
-            uint32_t col = 0x4A4A4A;  // Dark gray BGR
-            if (x > gun_x + gun_w - 8) col = 0x6A6A6A;  // Bright edge
-            if (y > gun_y + gun_h - 10) col = 0x555555;  // Grip darker
-            backbuffer[y * width + x] = col;
-        }
-    }
-    
-    // Barrel - bright
-    for (int y = gun_y + 10; y < gun_y + 30; y++) {
-        for (int x = gun_x + 45; x < gun_x + 60; x++) {
+    // GRIP - bottom dark section
+    for (int y = gun_y + 50; y < gun_y + gun_h; y++) {
+        for (int x = gun_x + 10; x < gun_x + 40; x++) {
             if (x >= 0 && x < width && y >= 0 && y < height) {
-                backbuffer[y * width + x] = 0xAAAAAA;  // Light gray BGR
+                uint8_t shade = (y - (gun_y + 50)) * 3;  // Gradient in grip
+                uint32_t grip_col = (shade << 16) | (shade << 8) | shade;  // Dark gray BGR
+                backbuffer[y * width + x] = grip_col;
             }
         }
     }
     
-    // Sight - red
-    for (int y = gun_y + 5; y < gun_y + 8; y++) {
-        for (int x = gun_x + 25; x < gun_x + 32; x++) {
+    // TRIGGER GUARD - curve around trigger
+    for (int y = gun_y + 35; y < gun_y + 50; y++) {
+        for (int x = gun_x + 15; x < gun_x + 35; x++) {
+            if (x >= 0 && x < width && y >= 0 && y < height) {
+                backbuffer[y * width + x] = 0x2A2A2A;  // Very dark gray BGR
+            }
+        }
+    }
+    
+    // TRIGGER - small red rectangle
+    for (int y = gun_y + 40; y < gun_y + 48; y++) {
+        for (int x = gun_x + 22; x < gun_x + 28; x++) {
+            if (x >= 0 && x < width && y >= 0 && y < height) {
+                backbuffer[y * width + x] = 0x0000AA;  // Red trigger BGR
+            }
+        }
+    }
+    
+    // SLIDE - main body
+    for (int y = gun_y + 10; y < gun_y + 45; y++) {
+        for (int x = gun_x + 5; x < gun_x + 55; x++) {
+            if (x >= 0 && x < width && y >= 0 && y < height) {
+                uint8_t c = 80 + ((x - gun_x) % 8) * 3;  // Metal texture
+                uint32_t col = (c << 16) | ((c - 20) << 8) | (c - 30);  // Dark metallic BGR\n                backbuffer[y * width + x] = col;
+            }
+        }
+    }
+    
+    // BARREL - bright metallic tube
+    for (int y = gun_y + 12; y < gun_y + 28; y++) {
+        for (int x = gun_x + 48; x < gun_x + 58; x++) {
+            if (x >= 0 && x < width && y >= 0 && y < height) {
+                uint8_t bright = 180 + ((x - (gun_x + 48)) % 4) * 10;  // Shiny
+                uint32_t barrel_col = (bright << 16) | ((bright - 20) << 8) | (bright - 40);  // Bright gray BGR
+                backbuffer[y * width + x] = barrel_col;
+            }
+        }
+    }
+    
+    // BARREL OPENING - dark hole
+    for (int y = gun_y + 14; y < gun_y + 26; y++) {
+        for (int x = gun_x + 56; x < gun_x + 60; x++) {
+            if (x >= 0 && x < width && y >= 0 && y < height) {
+                backbuffer[y * width + x] = 0x000000;  // Black opening BGR
+            }
+        }
+    }
+    
+    // FRONT SIGHT - small post
+    for (int y = gun_y + 8; y < gun_y + 15; y++) {
+        for (int x = gun_x + 42; x < gun_x + 46; x++) {
             if (x >= 0 && x < width && y >= 0 && y < height) {
                 backbuffer[y * width + x] = 0x0000FF;  // Red sight BGR
+            }
+        }
+    }
+    
+    // REAR SIGHT - small post
+    for (int y = gun_y + 5; y < gun_y + 12; y++) {
+        for (int x = gun_x + 18; x < gun_x + 22; x++) {
+            if (x >= 0 && x < width && y >= 0 && y < height) {
+                backbuffer[y * width + x] = 0x00FF00;  // Green rear sight BGR
+            }
+        }
+    }
+    
+    // MUZZLE FLASH - when just fired
+    if (g_player.shoot_recoil > 0.05) {
+        // Draw orange/yellow flash
+        for (int y = gun_y + 13; y < gun_y + 27; y++) {
+            for (int x = gun_x + 58; x < gun_x + 65; x++) {
+                if (x >= 0 && x < width && y >= 0 && y < height) {
+                    double flash_intensity = g_player.shoot_recoil * 2.0;  // Fade over time
+                    uint8_t flash_r = (uint8_t)(255.0 * flash_intensity);
+                    uint8_t flash_g = (uint8_t)(200.0 * flash_intensity * 0.8);
+                    uint8_t flash_b = 0;
+                    uint32_t flash = (flash_b << 16) | (flash_g << 8) | flash_r;  // Orange BGR
+                    backbuffer[y * width + x] = flash;
+                }
             }
         }
     }
@@ -510,7 +598,7 @@ void game_render(uint32_t* backbuffer, int width, int height) {
 }
 // ===== INPUT HANDLING =====
 void handle_key_input(uint8_t key, int is_down) {
-    // Reduced sensitivity
+    // Reduced sensitivity - smoother controls
     double accel = 35.0;
     double turn_accel = 3.0;
     
@@ -518,16 +606,16 @@ void handle_key_input(uint8_t key, int is_down) {
         // Forward/backward
         if (key == 'W' || key == 'w') g_fwd_speed = accel;
         if (key == 'S' || key == 's') g_fwd_speed = -accel;
-        // Strafe
+        // Strafe left/right
         if (key == 'A' || key == 'a') g_strafe_speed = accel;
         if (key == 'D' || key == 'd') g_strafe_speed = -accel;
-        // Rotate
+        // Rotate with arrows
         if (key == VK_LEFT) g_turn_speed = turn_accel;
         if (key == VK_RIGHT) g_turn_speed = -turn_accel;
-        // Shoot
-        if (key == VK_SPACE) player_shoot();
+        // Shoot with SPACE or ARROW UP
+        if (key == VK_SPACE || key == VK_UP) player_shoot();
     } else {
-        // Release keys
+        // Release keys - smooth deceleration
         if (key == 'W' || key == 'w' || key == 'S' || key == 's') g_fwd_speed = 0.0;
         if (key == 'A' || key == 'a' || key == 'D' || key == 'd') g_strafe_speed = 0.0;
         if (key == VK_LEFT || key == VK_RIGHT) g_turn_speed = 0.0;
