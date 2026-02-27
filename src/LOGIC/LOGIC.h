@@ -31,6 +31,7 @@ typedef struct {
     double health;      // Health points (0-100)
     double max_health;
     double shoot_cooldown;
+    double shoot_recoil; // Animation: gun recoil (0-1, 0=reset)
 } Player;
 
 // Enemy entity
@@ -42,6 +43,9 @@ typedef struct {
     double attack_timer;
     uint8_t texture_id;
     double ai_angle;
+    double width;   // Render as rectangle
+    double height;
+    double bob_angle; // Animation bobbing
 } Entity;
 
 // Projectile (bullet)
@@ -50,6 +54,9 @@ typedef struct {
     Vec3 vel;
     double lifetime;
     double age;
+    uint8_t color_r; // RGB for bullet
+    uint8_t color_g;
+    uint8_t color_b;
 } Projectile;
 
 // Raycast result
