@@ -128,7 +128,7 @@ void spawn_enemy(double x, double y, double z) {
     e->height = 2.5;  // Rectangle height (taller than wide)
     e->bob_angle = 0.0;  // Animation bobbing angle
     g_entity_count++;
-}}
+}
 
 // Shoot projectile - RED, SLOW
 void player_shoot(void) {
@@ -397,6 +397,7 @@ void game_update(void) {
         g_player.health = 100.0;
         g_player.pos.x = 128.0;
         g_player.pos.y = 128.0;
+        g_player.shoot_recoil = 0.0;
         g_entity_count = 0;
         for (int i = 0; i < 3; i++) {
             spawn_enemy(30.0 + (rand() % 180), 30.0 + (rand() % 180), 0.0);
