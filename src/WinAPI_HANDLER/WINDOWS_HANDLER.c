@@ -22,6 +22,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             g_running = false;
             PostQuitMessage(0);
             return 0;
+        case WM_LBUTTONDOWN:
+            // Left mouse button -> focus window, mark button and shoot
+            SetFocus(hwnd);
+            g_keys[VK_LBUTTON] = 1;
+            player_shoot();
+            return 0;
+        case WM_LBUTTONUP:
+            // Release left mouse button
+            g_keys[VK_LBUTTON] = 0;
+            return 0;
         case WM_KEYDOWN:
             if (wparam < 256) {
                 g_keys[wparam] = 1;

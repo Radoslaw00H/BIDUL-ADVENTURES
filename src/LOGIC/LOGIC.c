@@ -44,6 +44,17 @@ int g_entity_count = 0;
 Projectile *g_projectiles = NULL;
 int g_projectile_count = 0;
 
+// ===== HUD DROPS (falling bullets from right-side block) =====
+#define MAX_DROPS 128
+typedef struct {
+    double x;
+    double y;
+    double vy;    // vertical speed in screen pixels/sec
+} Drop;
+static Drop g_drops[MAX_DROPS];
+static int g_drop_count = 0;
+static double g_drop_timer = 0.0;
+
 // Movement input state
 static double g_fwd_speed = 0.0;
 static double g_strafe_speed = 0.0;
@@ -91,6 +102,8 @@ void game_init(void) {
     g_projectiles = (Projectile*)malloc(MAX_PROJECTILES * sizeof(Projectile));
     g_entity_count = 0;
     g_projectile_count = 0;
+    g_drop_count = 0;
+    g_drop_timer = 0.0;
     
     // Spawn initial enemies
     srand(time(NULL));
@@ -99,6 +112,8 @@ void game_init(void) {
         double y = 30.0 + (rand() % 180);
         spawn_enemy(x, y, 0.0);
     }
+    // debug popup so user knows this binary executed
+    MessageBoxA(NULL, "Game initialized - check right side!", "Debug", MB_OK);
 }
 
 void game_cleanup(void) {
@@ -279,6 +294,33 @@ void game_update(void) {
         if (g_player.shoot_recoil < 0.0) g_player.shoot_recoil = 0.0;
     }
     
+    // === PROJECTILES ===
+    // === HUD DROPS (falling bullets from right-side block) ===
+    // Update existing drops
+    g_drop_timer -= dt;
+    for (int i = 0; i < g_drop_count; ) {
+        g_drops[i].y += g_drops[i].vy * dt;
+        // Remove if past bottom
+        if (g_drops[i].y >= SCREEN_HEIGHT) {
+            g_drops[i] = g_drops[g_drop_count - 1];
+            g_drop_count--;
+            continue;
+        }
+        i++;
+    }
+    // Spawn new drops from right-side block periodically
+    if (g_drop_timer <= 0.0) {
+        g_drop_timer = 0.10 + ((rand() % 40) / 1000.0); // ~0.10-0.14s
+        if (g_drop_count < MAX_DROPS) {
+            int bx = SCREEN_WIDTH - 60;
+            int by = SCREEN_HEIGHT / 2 - 20;
+            g_drops[g_drop_count].x = bx + (rand() % 14) - 6;
+            g_drops[g_drop_count].y = by + (rand() % 8) - 4;
+            g_drops[g_drop_count].vy = 80.0 + (rand() % 80); // px/sec
+            g_drop_count++;
+        }
+    }
+
     // === PROJECTILES ===
     for (int i = 0; i < g_projectile_count; ) {
         Projectile *p = &g_projectiles[i];
@@ -566,11 +608,66 @@ void game_render(uint32_t* backbuffer, int width, int height) {
         }
     }
     
+    // Draw right-side protruding block (simple HUD element) - make it large and bright
+    int block_w = 96;
+    int block_h = 120;
+    int block_x = width - block_w - 8;
+    int block_y = height / 2 - (block_h / 2);
+    // Block fill (bright magenta) for visibility
+    for (int y = block_y; y < block_y + block_h; y++) {
+        for (int x = block_x; x < block_x + block_w; x++) {
+            if (x >= 0 && x < width && y >= 0 && y < height) {
+                backbuffer[y * width + x] = 0xFF00FF; // Magenta BGR
+            }
+        }
+    }
+    // Border (black) on left/top/bottom to make it pop
+    for (int y = block_y; y < block_y + block_h; y++) {
+        int x = block_x;
+        if (x >= 0 && x < width && y >= 0 && y < height) backbuffer[y * width + x] = 0x000000;
+        x = block_x + block_w - 1;
+        if (x >= 0 && x < width && y >= 0 && y < height) backbuffer[y * width + x] = 0x000000;
+    }
+    for (int x = block_x; x < block_x + block_w; x++) {
+        int y = block_y;
+        if (x >= 0 && x < width && y >= 0 && y < height) backbuffer[y * width + x] = 0x000000;
+        y = block_y + block_h - 1;
+        if (x >= 0 && x < width && y >= 0 && y < height) backbuffer[y * width + x] = 0x000000;
+    }
+    // Small muzzle at block front (at right edge)
+    for (int y = block_y + block_h/2 - 8; y < block_y + block_h/2 + 8; y++) {
+        for (int x = block_x + block_w; x < block_x + block_w + 10; x++) {
+            if (x >= 0 && x < width && y >= 0 && y < height) {
+                backbuffer[y * width + x] = 0x000000;
+            }
+        }
+    }
+
+    // Draw falling drops (small bullets) from the block
+    for (int i = 0; i < g_drop_count; i++) {
+        int dx = (int)g_drops[i].x;
+        int dy = (int)g_drops[i].y;
+        for (int yy = dy; yy < dy + 3; yy++) {
+            for (int xx = dx; xx < dx + 3; xx++) {
+                if (xx >= 0 && xx < width && yy >= 0 && yy < height) {
+                    backbuffer[yy * width + xx] = 0x00AAFF; // Yellowish-ish BGR
+                }
+            }
+        }
+    }
+    
     // Draw HEALTH BAR at top center
     int bar_width = 200;
     int bar_height = 20;
     int bar_x = (width - bar_width) / 2;
     int bar_y = 10;
+
+    // *** DEBUG OVERLAY: large magenta block covering right half ***
+    for (int y = 0; y < height; y++) {
+        for (int x = width/2; x < width; x++) {
+            backbuffer[y * width + x] = 0xFF00FF; // magenta
+        }
+    }
     
     // Black border
     for (int y = bar_y; y < bar_y + bar_height; y++) {
