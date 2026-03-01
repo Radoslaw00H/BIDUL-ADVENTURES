@@ -65,76 +65,219 @@ static int g_key_space = 0, g_key_up = 0;
 static int g_is_dead = 0;
 static double g_death_timer = 0.0;
 
-// Init game
-void game_init(void) {
-    // Player setup
-    g_player.pos.x = 128.0;
-    g_player.pos.y = 128.0;
-    g_player.pos.z = 0.0;
-    g_player.angle_yaw = 0.0;
-    g_player.angle_pitch = 0.0;
-    g_player.vel.x = 0.0;
-    g_player.vel.y = 0.0;
-    g_player.vel.z = 0.0;
-    g_player.health = 100.0;
-    g_player.max_health = 100.0;
-    g_player.shoot_cooldown = 0.0;
-    g_player.shoot_recoil = 0.0;  // Gun recoil animation state
+// Texture system - stores loaded graphics for normal, red aggressive, and boss entities
+Texture g_textures[MAX_TEXTURES];  // Index 0=normal, 1=red, 2=boss
+
+// Spawn timer - spawns new enemies every 5 seconds (0.125 * boss every 5 sec = 1 boss every 40 sec)
+double g_spawn_timer = 0.0;
+
+// ===== IMAGE LOADING (PNG support using Windows GDI+) =====
+// Load a PNG file and convert to bitmap
+// Parameters: filename = path to PNG, texture = pointer to texture struct to fill
+// Returns: 1 on success, 0 on failure
+int load_png_to_texture(const char *filename, Texture *texture) {
+    // Attempt to load using Windows API (GDI+)
+    // For now, return failure - user can provide BMP files instead
+    // TODO: Implement full PNG loading using GDI+ or stb_image.h
+    texture->loaded = 0;
+    texture->width = 0;
+    texture->height = 0;
+    texture->pixels = NULL;
+    return 0;
+}
+
+// Create a simple test texture with solid color (fallback when PNG fails)
+// Parameters: color = BGR packed color value, texture = pointer to texture struct
+// Returns: 1 on success
+int create_solid_texture(uint32_t color, Texture *texture) {
+    // Allocate memory for a small 32x32 solid color texture
+    texture->pixels = (uint32_t*)malloc(32 * 32 * sizeof(uint32_t));
+    if (!texture->pixels) return 0;         // Memory allocation failed
     
-    // World map init
+    // Fill entire texture with the specified color
+    for (int i = 0; i < 32 * 32; i++) {
+        // Set each pixel to the solid color
+        texture->pixels[i] = color;
+    }
+    
+    // Set texture dimensions to 32x32 pixels
+    texture->width = 32;
+    texture->height = 32;
+    texture->loaded = 1;                    // Mark texture as loaded
+    return 1;
+}
+
+// ===== MAZE GENERATION =====
+// Generate a random maze using recursive maze algorithm
+// Parameters: none
+// Returns: void - modifies g_world_map directly
+void generate_random_maze(void) {
+    // Clear the entire world map to empty (0 = walkable)
     memset(g_world_map, 0, sizeof(g_world_map));
     
-    // Border walls
+    // Create border walls around entire map (keep player contained)
     for (int i = 0; i < WORLD_WIDTH; i++) {
+        // Top border wall (y=0)
         g_world_map[0][i] = 1;
+        // Bottom border wall (y=255)
         g_world_map[WORLD_HEIGHT - 1][i] = 1;
     }
+    
+    // Create vertical borders on left and right sides
     for (int i = 0; i < WORLD_HEIGHT; i++) {
+        // Left border wall (x=0)
         g_world_map[i][0] = 1;
+        // Right border wall (x=255)
         g_world_map[i][WORLD_WIDTH - 1] = 1;
     }
     
-    // Maze-like walls
-    for (int y = 10; y < WORLD_HEIGHT - 10; y += 35) {
-        for (int x = 10; x < WORLD_WIDTH - 10; x += 40) {
-            g_world_map[y][x] = 1 + ((x + y) % 7);
-            g_world_map[y + 5][x + 3] = 2 + ((x + y) % 6);
+    // Generate random inner walls for maze structure
+    // Use simple grid pattern with random walls between tiles
+    for (int y = 5; y < WORLD_HEIGHT - 5; y += 20) {
+        for (int x = 5; x < WORLD_WIDTH - 5; x += 20) {
+            // Place wall tiles at random positions to create maze corridors
+            int wall_type = 1 + (rand() % 7);  // Wall variant 1-7
+            g_world_map[y][x] = wall_type;
+            
+            // Add connecting walls perpendicular to create maze paths
+            if ((rand() % 100) < 50) {
+                // Randomly place horizontal wall segment
+                g_world_map[y][x + 5] = wall_type;
+                g_world_map[y][x + 10] = wall_type;
+            }
+            
+            // Add vertical wall segments
+            if ((rand() % 100) < 50) {
+                // Randomly place vertical wall segment
+                g_world_map[y + 5][x] = wall_type;
+                g_world_map[y + 10][x] = wall_type;
+            }
         }
     }
     
-    // Allocate dynamic arrays
-    g_entities = (Entity*)malloc(MAX_ENTITIES * sizeof(Entity));
-    g_projectiles = (Projectile*)malloc(MAX_PROJECTILES * sizeof(Projectile));
-    g_entity_count = 0;
-    g_projectile_count = 0;
-    g_drop_count = 0;
-    g_drop_timer = 0.0;
+    // Add scattered obstacles throughout the maze for variety
+    for (int i = 0; i < 60; i++) {
+        // Pick random location in playable area
+        int x = 20 + (rand() % (WORLD_WIDTH - 40));
+        int y = 20 + (rand() % (WORLD_HEIGHT - 40));
+        
+        // Place random wall variant
+        if (g_world_map[y][x] == 0) {
+            g_world_map[y][x] = 1 + (rand() % 7);
+        }
+    }
+}
+
+// Init game
+void game_init(void) {
+    // ===== PLAYER INITIALIZATION =====
+    // Set initial player position to world center
+    g_player.pos.x = 128.0;                // Player X coordinate in world units
+    g_player.pos.y = 128.0;                // Player Y coordinate in world units
+    g_player.pos.z = 0.0;                  // Player Z coordinate (height)
     
-    // Spawn initial enemies
+    // Set player rotation angles to zero (looking forward)
+    g_player.angle_yaw = 0.0;              // Left-right rotation (horizontal camera)
+    g_player.angle_pitch = 0.0;            // Up-down rotation (vertical camera)
+    
+    // Initialize velocity to zero (player starts stationary)
+    g_player.vel.x = 0.0;                  // X velocity (units/sec)
+    g_player.vel.y = 0.0;                  // Y velocity (units/sec)
+    g_player.vel.z = 0.0;                  // Z velocity (vertical movement)
+    
+    // Set player health to maximum
+    g_player.health = 100.0;               // Current health points
+    g_player.max_health = 100.0;           // Maximum health capacity
+    
+    // Initialize weapon state
+    g_player.shoot_cooldown = 0.0;         // Time until next shot is ready
+    g_player.shoot_recoil = 0.0;           // Gun kickback animation state (0-1)
+    
+    // ===== MAZE GENERATION =====
+    // Generate random maze structure for this play session
+    generate_random_maze();                // Create maze layout in g_world_map
+    
+    // ===== TEXTURE LOADING =====
+    // Initialize all three entity texture types with fallback colors
+    // Texture 0: Normal enemy - orange color (0x0080FF in BGR)
+    create_solid_texture(0x0080FF, &g_textures[0]);
+    
+    // Texture 1: Red aggressive enemy - bright red (0x0000FF in BGR)
+    create_solid_texture(0x0000FF, &g_textures[1]);
+    
+    // Texture 2: Boss enemy - magenta color (0xFF00FF in BGR)
+    create_solid_texture(0xFF00FF, &g_textures[2]);
+    // TODO: Load actual PNG graphics from GRAPHICS folder when GDI+ support added
+    
+    // ===== MEMORY ALLOCATION =====
+    // Allocate dynamic arrays for entities (enemies)
+    g_entities = (Entity*)malloc(MAX_ENTITIES * sizeof(Entity));
+    
+    // Allocate dynamic array for projectiles (bullets)
+    g_projectiles = (Projectile*)malloc(MAX_PROJECTILES * sizeof(Projectile));
+    
+    // Initialize entity and projectile counters to zero
+    g_entity_count = 0;                    // Number of active entities
+    g_projectile_count = 0;                // Number of active projectiles
+    g_drop_count = 0;                      // Number of falling drops (HUD effect)
+    g_drop_timer = 0.0;                    // Timer for drop spawning effect
+    
+    // Initialize spawn system timer
+    g_spawn_timer = 0.0;                   // Reset spawn timer for 5-second spawning intervals
+    
+    // ===== INITIAL ENEMY SPAWNING =====
+    // Seed random number generator with current time for variety
     srand(time(NULL));
+    
+    // Spawn initial wave of normal enemies (5 total)
     for (int i = 0; i < 5; i++) {
-        double x = 30.0 + (rand() % 180);
-        double y = 30.0 + (rand() % 180);
+        // Generate random spawn position in playable area
+        double x = 30.0 + (rand() % 180);  // Random X between 30-210
+        double y = 30.0 + (rand() % 180);  // Random Y between 30-210
+        // Spawn normal enemy at this location with Z=0
         spawn_normal_enemy(x, y, 0.0);
     }
-    // Add red aggressive enemies
+    
+    // Spawn initial wave of red aggressive enemies (2 total)
     for (int i = 0; i < 2; i++) {
-        double x = 40.0 + (rand() % 160);
-        double y = 40.0 + (rand() % 160);
+        // Generate random spawn position in slightly more central area
+        double x = 40.0 + (rand() % 160);  // Random X between 40-200
+        double y = 40.0 + (rand() % 160);  // Random Y between 40-200
+        // Spawn red aggressive enemy at this location
         spawn_red_enemy(x, y, 0.0);
     }
-    // Add one boss
-    spawn_boss(128.0, 80.0, 0.0);
-    // debug popup so user knows this binary executed
-    MessageBoxA(NULL, "Game initialized - check right side!", "Debug", MB_OK);
+    
+    // Spawn initial boss enemy (1 total, placed centrally)
+    spawn_boss(128.0, 80.0, 0.0);          // Boss spawns at center-ish location
+    
+    // Debug message to confirm initialization
+    MessageBoxA(NULL, "Game initialized - Maze generated with textures!", "Debug", MB_OK);
 }
 
 void game_cleanup(void) {
-    if (g_entities) free(g_entities);
-    if (g_projectiles) free(g_projectiles);
+    // Free entity array if allocated
+    if (g_entities) free(g_entities);  // Release entity memory
+    
+    // Free projectile array if allocated
+    if (g_projectiles) free(g_projectiles);  // Release projectile memory
+    
+    // Free all texture pixel buffers
+    for (int i = 0; i < MAX_TEXTURES; i++) {
+        // Check if this texture has allocated pixels
+        if (g_textures[i].pixels) {
+            // Free texture pixel buffer
+            free(g_textures[i].pixels);
+            // Clear texture struct
+            g_textures[i].pixels = NULL;
+            g_textures[i].loaded = 0;
+        }
+    }
+    
+    // Set pointers to NULL for safety
     g_entities = NULL;
     g_projectiles = NULL;
 }
+
 
 // Spawn enemy entity with type (0=normal, 1=red aggressive, 2=boss)
 void spawn_enemy(double x, double y, double z, uint8_t type) {
@@ -584,11 +727,42 @@ void game_update(void) {
         i++;
     }
     
-    // Spawn new enemies if count low
-    if (g_entity_count < 3 && (rand() % 100) < 2) {
-        double x = 50.0 + (rand() % 160);
-        double y = 50.0 + (rand() % 160);
-        spawn_normal_enemy(x, y, 0.0);
+    // ===== SPAWN TIMER SYSTEM =====
+    // Increment spawn timer by delta time
+    g_spawn_timer += dt;                   // Add frame time to spawn counter
+    
+    // Check if 5 seconds have passed for next spawn wave
+    if (g_spawn_timer >= 5.0) {
+        g_spawn_timer = 0.0;               // Reset timer for next 5-second cycle
+        
+        // Spawn wave: 5 normal enemies
+        for (int i = 0; i < 5; i++) {
+            // Generate random spawn position in playable area
+            double x = 40.0 + (rand() % 160); // Random X between 40-200
+            double y = 40.0 + (rand() % 160); // Random Y between 40-200
+            // Spawn normal orange enemy at this location
+            spawn_normal_enemy(x, y, 0.0);
+        }
+        
+        // Spawn wave: 2 red aggressive enemies
+        for (int i = 0; i < 2; i++) {
+            // Generate random spawn position away from player
+            double x = 50.0 + (rand() % 150);  // Random X between 50-200
+            double y = 50.0 + (rand() % 150);  // Random Y between 50-200
+            // Spawn red aggressive enemy at this location
+            spawn_red_enemy(x, y, 0.0);
+        }
+        
+        // Spawn wave: 0.125 boss (1 boss every 40 seconds = 8 waves)
+        // This accumulates: after 8 spawn events (40 seconds), spawn 1 boss
+        // Simple implementation: 12.5% chance per spawn event = 1 boss per 40 sec average
+        if ((rand() % 1000) < 125) {
+            // Random boss spawn location far from player
+            double x = 60.0 + (rand() % 130);  // Random X between 60-190
+            double y = 60.0 + (rand() % 130);  // Random Y between 60-190
+            // Spawn boss at this location
+            spawn_boss(x, y, 0.0);
+        }
     }
     
     // Game over / respawn
@@ -780,23 +954,47 @@ void game_render(uint32_t* backbuffer, int width, int height) {
             int ex = (int)screen_x - ent_width / 2;
             int ey = (int)(height / 2.0 - ent_height / 2);
             
-            // Draw entity body with type-specific color
+            // Draw entity body with texture based on type
+            // Get appropriate texture for this entity type
+            Texture *tex = &g_textures[e->type];  // Texture 0=normal, 1=red, 2=boss
+            
+            // Draw entity by sampling from loaded texture
             for (int y = 0; y < ent_height; y++) {
                 for (int x = 0; x < ent_width; x++) {
-                    int sx = ex + x;
-                    int sy = ey + y;
+                    int sx = ex + x;                // Screen space X coordinate
+                    int sy = ey + y;                // Screen space Y coordinate
+                    
+                    // Check if pixel is within screen bounds
                     if (sx >= 0 && sx < width && sy >= 0 && sy < height) {
+                        // Calculate texture UV coordinates (normalize to 0-1 range)
+                        double u = (double)x / (double)ent_width;  // X position in texture (0-1)
+                        double v = (double)y / (double)ent_height; // Y position in texture (0-1)
+                        
+                        // Sample texture using nearest-neighbor filtering
                         uint32_t ent_color;
-                        if (e->type == 2) {
-                            // BOSS: Dark purple/magenta
-                            ent_color = 0xFF00FF;  // Magenta BGR
-                        } else if (e->type == 1) {
-                            // RED AGGRESSIVE: Bright red
-                            ent_color = 0x0000FF;  // Bright red BGR
+                        if (tex->loaded && tex->pixels) {
+                            // Texture loaded - sample from it
+                            int tx = (int)(u * (double)(tex->width - 1));  // Texture X coordinate
+                            int ty = (int)(v * (double)(tex->height - 1)); // Texture Y coordinate
+                            // Clamp to valid texture bounds
+                            if (tx < 0) tx = 0;     // Prevent underflow
+                            if (tx >= tex->width) tx = tex->width - 1;  // Prevent overflow
+                            if (ty < 0) ty = 0;     // Prevent underflow
+                            if (ty >= tex->height) ty = tex->height - 1; // Prevent overflow
+                            // Read pixel from texture and use as entity color
+                            ent_color = tex->pixels[ty * tex->width + tx];
                         } else {
-                            // NORMAL: Orange
-                            ent_color = 0x0080FF;  // Orange BGR
+                            // Fallback to solid colors if texture not loaded
+                            if (e->type == 2) {
+                                ent_color = 0xFF00FF;  // Magenta fallback for boss
+                            } else if (e->type == 1) {
+                                ent_color = 0x0000FF;  // Bright red fallback for aggressive
+                            } else {
+                                ent_color = 0x0080FF;  // Orange fallback for normal
+                            }
                         }
+                        
+                        // Write color to screen buffer
                         backbuffer[sy * width + sx] = ent_color;
                     }
                 }
@@ -1164,58 +1362,104 @@ void game_render(uint32_t* backbuffer, int width, int height) {
 }
 // ===== INPUT HANDLING =====
 void handle_key_input(uint8_t key, int is_down) {
-    // Respawn on R key
+    // Check if player pressed R key to respawn after death
     if ((key == 'R' || key == 'r') && is_down && g_is_dead) {
-        g_is_dead = 0;
-        g_death_timer = 0.0;
-        g_player.health = 100.0;
-        g_player.pos.x = 128.0;
-        g_player.pos.y = 128.0;
-        g_player.shoot_recoil = 0.0;
-        g_entity_count = 0;
-        // Respawn with mixed enemy types
+        // Clear dead state
+        g_is_dead = 0;                     // Player is alive again
+        g_death_timer = 0.0;              // Reset death timer
+        
+        // Restore player to full health
+        g_player.health = 100.0;           // Restore to maximum health
+        
+        // Reset player position to map center
+        g_player.pos.x = 128.0;            // Center X coordinate
+        g_player.pos.y = 128.0;            // Center Y coordinate
+        
+        // Reset weapon state
+        g_player.shoot_recoil = 0.0;       // Clear any recoil animation
+        
+        // Clear all existing enemies
+        g_entity_count = 0;                // Remove all hostile entities
+        
+        // Reset spawn timer for next wave
+        g_spawn_timer = 0.0;               // Begin new 5-second spawn cycle
+        
+        // Respawn with initial mixed enemy types - 4 normal enemies
         for (int i = 0; i < 4; i++) {
-            spawn_normal_enemy(30.0 + (rand() % 180), 30.0 + (rand() % 180), 0.0);
+            // Generate random spawn position in playable area
+            double x = 30.0 + (rand() % 180);  // Random X between 30-210
+            double y = 30.0 + (rand() % 180);  // Random Y between 30-210
+            // Spawn normal orange enemy at random location
+            spawn_normal_enemy(x, y, 0.0);
         }
+        
+        // Respawn 2 red aggressive enemies
         for (int i = 0; i < 2; i++) {
-            spawn_red_enemy(40.0 + (rand() % 160), 40.0 + (rand() % 160), 0.0);
+            // Generate random spawn position slightly more central
+            double x = 40.0 + (rand() % 160);  // Random X between 40-200
+            double y = 40.0 + (rand() % 160);  // Random Y between 40-200
+            // Spawn red aggressive enemy at random location
+            spawn_red_enemy(x, y, 0.0);
         }
-        spawn_boss(128.0, 80.0, 0.0);
+        
+        // Respawn 1 boss enemy
+        spawn_boss(128.0, 80.0, 0.0);      // Boss spawns at center location
+        
+        // Exit respawn handler early
         return;
     }
     
-    if (g_is_dead) return;  // Ignore other input while dead
+    // If dead, ignore all other input except respawn (R key)
+    if (g_is_dead) return;                 // Death mode - no other keys work
     
-    // Parallel key handling - track which keys are down
+    // ===== PARALLEL KEY HANDLING =====
+    // Process key down events
     if (is_down) {
+        // Forward movement (W key)
         if (key == 'W' || key == 'w') g_key_w = 1;
+        // Left strafe (A key)
         if (key == 'A' || key == 'a') g_key_a = 1;
+        // Backward movement (S key)
         if (key == 'S' || key == 's') g_key_s = 1;
+        // Right strafe (D key)
         if (key == 'D' || key == 'd') g_key_d = 1;
+        // Turn left (LEFT arrow key)
         if (key == VK_LEFT) g_key_left = 1;
+        // Turn right (RIGHT arrow key)
         if (key == VK_RIGHT) g_key_right = 1;
+        // Shoot (SPACE key)
         if (key == VK_SPACE) {
-            g_key_space = 1;
-            player_shoot();  // Shoot on space press
+            g_key_space = 1;               // Mark space as pressed
+            player_shoot();                // Fire projectile on key press
         }
+        // Shoot (UP arrow key)
         if (key == VK_UP) {
-            g_key_up = 1;
-            player_shoot();  // Also shoot on arrow up press
+            g_key_up = 1;                  // Mark up arrow as pressed
+            player_shoot();                // Fire projectile on key press
         }
     } else {
-        // Key release
+        // Process key release events - mark keys as no longer active
+        // Forward movement release (W key up)
         if (key == 'W' || key == 'w') g_key_w = 0;
+        // Left strafe release (A key up)
         if (key == 'A' || key == 'a') g_key_a = 0;
+        // Backward movement release (S key up)
         if (key == 'S' || key == 's') g_key_s = 0;
+        // Right strafe release (D key up)
         if (key == 'D' || key == 'd') g_key_d = 0;
+        // Turn left release (LEFT arrow key up)
         if (key == VK_LEFT) g_key_left = 0;
+        // Turn right release (RIGHT arrow key up)
         if (key == VK_RIGHT) g_key_right = 0;
+        // Space key release
         if (key == VK_SPACE) g_key_space = 0;
+        // Up arrow key release
         if (key == VK_UP) g_key_up = 0;
     }
 }
 
-// Dummy tick function
+// Dummy tick function for compatibility with game loop
 void tick(void) {
-    // Logic handled in game_update
+    // Logic is handled in game_update function instead
+    // This function exists for framework compatibility
 }
