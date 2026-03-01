@@ -1,7 +1,7 @@
 // Game code for BIDUL ADVENTURES: Full 3D FPS with enemies, projectiles, health
-
-#include "LOGIC.h"
-#include <windows.h>
+// [LIBRARIES] ------------------------------------------------------------------------------------------
+#include "LOGIC.h"      // Example on how you should comment every line
+#include <windows.h>    // Windows APT library
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -115,8 +115,16 @@ void game_init(void) {
     for (int i = 0; i < 5; i++) {
         double x = 30.0 + (rand() % 180);
         double y = 30.0 + (rand() % 180);
-        spawn_enemy(x, y, 0.0);
+        spawn_normal_enemy(x, y, 0.0);
     }
+    // Add red aggressive enemies
+    for (int i = 0; i < 2; i++) {
+        double x = 40.0 + (rand() % 160);
+        double y = 40.0 + (rand() % 160);
+        spawn_red_enemy(x, y, 0.0);
+    }
+    // Add one boss
+    spawn_boss(128.0, 80.0, 0.0);
     // debug popup so user knows this binary executed
     MessageBoxA(NULL, "Game initialized - check right side!", "Debug", MB_OK);
 }
@@ -128,8 +136,8 @@ void game_cleanup(void) {
     g_projectiles = NULL;
 }
 
-// Spawn enemy entity with RECTANGLE dimensions
-void spawn_enemy(double x, double y, double z) {
+// Spawn enemy entity with type (0=normal, 1=red aggressive, 2=boss)
+void spawn_enemy(double x, double y, double z, uint8_t type) {
     if (g_entity_count >= MAX_ENTITIES) return;
     
     Entity *e = &g_entities[g_entity_count];
@@ -139,15 +147,50 @@ void spawn_enemy(double x, double y, double z) {
     e->vel.x = 0.0;
     e->vel.y = 0.0;
     e->vel.z = 0.0;
-    e->health = 50.0;
-    e->max_health = 50.0;
-    e->attack_timer = 0.0;
-    e->texture_id = 3 + (rand() % 5);  // Textures 3-7
+    e->type = type;
     e->ai_angle = 0.0;
-    e->width = 1.5;   // Rectangle width
-    e->height = 2.5;  // Rectangle height (taller than wide)
-    e->bob_angle = 0.0;  // Animation bobbing angle
+    e->bob_angle = 0.0;
+    e->attack_timer = 0.0;
+    
+    if (type == 2) {
+        // BOSS: 4x bigger, 50x health (2500), heavy damage (25% HP = 25 damage)
+        e->health = 2500.0;
+        e->max_health = 2500.0;
+        e->width = 6.0;    // 4x the normal 1.5
+        e->height = 10.0;  // 4x the normal 2.5
+        e->texture_id = 7; // Unique boss appearance
+    } else if (type == 1) {
+        // RED AGGRESSIVE: Normal size but faster shooting
+        e->health = 50.0;
+        e->max_health = 50.0;
+        e->width = 1.5;
+        e->height = 2.5;
+        e->texture_id = 1; // Red color (stone walls = gray, but we'll render as red)
+    } else {
+        // NORMAL: Standard enemy
+        e->health = 50.0;
+        e->max_health = 50.0;
+        e->width = 1.5;
+        e->height = 2.5;
+        e->texture_id = 3 + (rand() % 5);  // Textures 3-7
+    }
+    
     g_entity_count++;
+}
+
+// Spawn normal enemy
+void spawn_normal_enemy(double x, double y, double z) {
+    spawn_enemy(x, y, z, 0);
+}
+
+// Spawn red aggressive enemy
+void spawn_red_enemy(double x, double y, double z) {
+    spawn_enemy(x, y, z, 1);
+}
+
+// Spawn boss enemy
+void spawn_boss(double x, double y, double z) {
+    spawn_enemy(x, y, z, 2);
 }
 
 // Shoot projectile - RED, SLOW
@@ -437,10 +480,21 @@ void game_update(void) {
         double dist = sqrt(dx * dx + dy * dy);
         
         if (dist > 0.1) {
-            // Slower, more natural chase speed: varies between 4-7
-            double base_speed = 5.5;
-            double bob_mod = sin(e->bob_angle) * 1.5;  // Varies chase speed slightly
-            double chase_speed = base_speed + bob_mod;
+            double chase_speed = 5.5;  // Default
+            
+            if (e->type == 2) {
+                // BOSS: Fast movement 15-20 units/sec
+                double bob_mod = sin(e->bob_angle) * 2.0;
+                chase_speed = 17.0 + bob_mod;
+            } else if (e->type == 1) {
+                // RED AGGRESSIVE: Medium speed 7-10 units/sec
+                double bob_mod = sin(e->bob_angle) * 1.5;
+                chase_speed = 8.5 + bob_mod;
+            } else {
+                // NORMAL: Slow 4-7 units/sec
+                double bob_mod = sin(e->bob_angle) * 1.5;
+                chase_speed = 5.5 + bob_mod;
+            }
             
             e->vel.x = (dx / dist) * chase_speed;
             e->vel.y = (dy / dist) * chase_speed;
@@ -469,10 +523,39 @@ void game_update(void) {
         }
         
         // Attack player if close - shoot projectiles with inaccuracy
-        if (dist < 60.0 && e->attack_timer <= 0.0) {
+        double attack_range = 60.0;
+        if (e->type == 2) attack_range = 80.0;  // Boss can shoot from further
+        
+        if (dist < attack_range && e->attack_timer <= 0.0) {
+            // Determine attack parameters based on type
+            double inaccuracy_amount = 0.3;  // Default
+            double shot_speed = 20.0;
+            double cooldown = 1.5;
+            double damage = 10.0;
+            
+            if (e->type == 2) {
+                // BOSS: High accuracy, fast shots, rapid fire, huge damage
+                inaccuracy_amount = 0.1;  // Better accuracy
+                shot_speed = 30.0;        // Faster bullets
+                cooldown = 0.8;           // Rapid fire
+                damage = 15.0;            // Higher damage per shot
+            } else if (e->type == 1) {
+                // RED AGGRESSIVE: Good accuracy, fast fire
+                inaccuracy_amount = 0.2;
+                shot_speed = 25.0;
+                cooldown = 1.0;           // Faster than normal
+                damage = 10.0;
+            } else {
+                // NORMAL: Standard
+                inaccuracy_amount = 0.3;
+                shot_speed = 20.0;
+                cooldown = 1.5;
+                damage = 10.0;
+            }
+            
             // Add inaccuracy to enemy shots
-            double inaccuracy = (rand() % 100) / 100.0 * 0.3;  // 0-0.3 radians
-            double shoot_angle = e->ai_angle + (inaccuracy - 0.15);  // Random -0.15 to +0.15
+            double inaccuracy = (rand() % 100) / 100.0 * inaccuracy_amount;
+            double shoot_angle = e->ai_angle + (inaccuracy - inaccuracy_amount/2.0);
             
             // Enemy shoots green projectile
             if (g_projectile_count < MAX_PROJECTILES) {
@@ -480,8 +563,8 @@ void game_update(void) {
                 ep->pos.x = e->pos.x + cos(shoot_angle) * 1.5;
                 ep->pos.y = e->pos.y + sin(shoot_angle) * 1.5;
                 ep->pos.z = e->pos.z + 0.5;
-                ep->vel.x = cos(shoot_angle) * 20.0;
-                ep->vel.y = sin(shoot_angle) * 20.0;
+                ep->vel.x = cos(shoot_angle) * shot_speed;
+                ep->vel.y = sin(shoot_angle) * shot_speed;
                 ep->vel.z = 0.0;
                 ep->lifetime = 5.0;
                 ep->age = 0.0;
@@ -491,11 +574,11 @@ void game_update(void) {
                 g_projectile_count++;
             }
             
-            // Direct damage if too close
-            if (dist < 5.0) {
-                g_player.health -= 10.0;
+            // Direct damage if too close (only bosses do this)
+            if (e->type == 2 && dist < 8.0) {
+                g_player.health -= 25.0;  // Boss deals 25% HP per close hit
             }
-            e->attack_timer = 1.5;  // 1.5s between shots
+            e->attack_timer = cooldown;
         }
         
         i++;
@@ -505,7 +588,7 @@ void game_update(void) {
     if (g_entity_count < 3 && (rand() % 100) < 2) {
         double x = 50.0 + (rand() % 160);
         double y = 50.0 + (rand() % 160);
-        spawn_enemy(x, y, 0.0);
+        spawn_normal_enemy(x, y, 0.0);
     }
     
     // Game over / respawn
@@ -531,12 +614,12 @@ void game_render(uint32_t* backbuffer, int width, int height) {
         RayHit hit = raycast(g_player.pos.x, g_player.pos.y, g_player.pos.z, col_angle_yaw, pitch);
         
         if (hit.distance >= 150.0) {
-            // Sunset sky with orange/purple gradient
+            // Deep evening orange sky
             for (int row = 0; row < height / 2; row++) {
                 double t = (double)row / (height / 2.0);
-                uint8_t r = (uint8_t)(255.0 * (1.0 - t * 0.3));
-                uint8_t g = (uint8_t)(140.0 * (1.0 - t * 0.5));
-                uint8_t b = (uint8_t)(80.0 * (1.0 - t * 0.2));
+                uint8_t r = (uint8_t)(255.0 * (1.0 - t * 0.5));        // 255 to 127
+                uint8_t g = (uint8_t)(150.0 * (1.0 - t * 0.7));        // 150 to 45
+                uint8_t b = (uint8_t)(60.0 * (1.0 - t * 0.9));         // 60 to 6
                 backbuffer[row * width + col] = (b << 16) | (g << 8) | r;
             }
             // Floor
@@ -549,9 +632,9 @@ void game_render(uint32_t* backbuffer, int width, int height) {
         // Draw sky first (will be overwritten by sun/moon)
         for (int row = 0; row < height / 2; row++) {
             double t = (double)row / (height / 2.0);
-            uint8_t r = (uint8_t)(255.0 * (1.0 - t * 0.3));
-            uint8_t g = (uint8_t)(140.0 * (1.0 - t * 0.5));
-            uint8_t b = (uint8_t)(80.0 * (1.0 - t * 0.2));
+            uint8_t r = (uint8_t)(255.0 * (1.0 - t * 0.5));
+            uint8_t g = (uint8_t)(150.0 * (1.0 - t * 0.7));
+            uint8_t b = (uint8_t)(60.0 * (1.0 - t * 0.9));
             backbuffer[row * width + col] = (b << 16) | (g << 8) | r;
         }
         
@@ -579,10 +662,10 @@ void game_render(uint32_t* backbuffer, int width, int height) {
         double fog_factor = (hit.distance / 150.0);  // Full fog at max distance
         if (fog_factor > 1.0) fog_factor = 1.0;
         
-        // Blend color towards sky color at distance
-        uint8_t fog_r = (uint8_t)(255.0 * (1.0 - fog_factor * 0.3));
-        uint8_t fog_g = (uint8_t)(140.0 * (1.0 - fog_factor * 0.5));
-        uint8_t fog_b = (uint8_t)(80.0 * (1.0 - fog_factor * 0.2));
+        // Blend color towards sky color at distance (evening orange)
+        uint8_t fog_r = (uint8_t)(255.0 * (1.0 - fog_factor * 0.5));
+        uint8_t fog_g = (uint8_t)(150.0 * (1.0 - fog_factor * 0.7));
+        uint8_t fog_b = (uint8_t)(60.0 * (1.0 - fog_factor * 0.9));
         
         uint8_t col_r = ((color >> 0) & 0xFF);
         uint8_t col_g = ((color >> 8) & 0xFF);
@@ -602,9 +685,9 @@ void game_render(uint32_t* backbuffer, int width, int height) {
         // Floor and ceiling
         for (int row = 0; row < start_row; row++) {
             double t = (double)row / (height / 2.0);
-            uint8_t r = (uint8_t)(255.0 * (1.0 - t * 0.3));
-            uint8_t g = (uint8_t)(140.0 * (1.0 - t * 0.5));
-            uint8_t b = (uint8_t)(80.0 * (1.0 - t * 0.2));
+            uint8_t r = (uint8_t)(255.0 * (1.0 - t * 0.5));
+            uint8_t g = (uint8_t)(150.0 * (1.0 - t * 0.7));
+            uint8_t b = (uint8_t)(60.0 * (1.0 - t * 0.9));
             backbuffer[row * width + col] = (b << 16) | (g << 8) | r;
         }
         for (int row = end_row; row < height; row++) {
@@ -697,13 +780,23 @@ void game_render(uint32_t* backbuffer, int width, int height) {
             int ex = (int)screen_x - ent_width / 2;
             int ey = (int)(height / 2.0 - ent_height / 2);
             
-            // Draw entity body
+            // Draw entity body with type-specific color
             for (int y = 0; y < ent_height; y++) {
                 for (int x = 0; x < ent_width; x++) {
                     int sx = ex + x;
                     int sy = ey + y;
                     if (sx >= 0 && sx < width && sy >= 0 && sy < height) {
-                        uint32_t ent_color = 0x0080FF;  // Orange BGR for entities
+                        uint32_t ent_color;
+                        if (e->type == 2) {
+                            // BOSS: Dark purple/magenta
+                            ent_color = 0xFF00FF;  // Magenta BGR
+                        } else if (e->type == 1) {
+                            // RED AGGRESSIVE: Bright red
+                            ent_color = 0x0000FF;  // Bright red BGR
+                        } else {
+                            // NORMAL: Orange
+                            ent_color = 0x0080FF;  // Orange BGR
+                        }
                         backbuffer[sy * width + sx] = ent_color;
                     }
                 }
@@ -1080,9 +1173,14 @@ void handle_key_input(uint8_t key, int is_down) {
         g_player.pos.y = 128.0;
         g_player.shoot_recoil = 0.0;
         g_entity_count = 0;
-        for (int i = 0; i < 3; i++) {
-            spawn_enemy(30.0 + (rand() % 180), 30.0 + (rand() % 180), 0.0);
+        // Respawn with mixed enemy types
+        for (int i = 0; i < 4; i++) {
+            spawn_normal_enemy(30.0 + (rand() % 180), 30.0 + (rand() % 180), 0.0);
         }
+        for (int i = 0; i < 2; i++) {
+            spawn_red_enemy(40.0 + (rand() % 160), 40.0 + (rand() % 160), 0.0);
+        }
+        spawn_boss(128.0, 80.0, 0.0);
         return;
     }
     
