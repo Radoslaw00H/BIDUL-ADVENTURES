@@ -1,17 +1,37 @@
-// Game code for BIDUL ADVENTURES: Full 3D FPS with enemies, projectiles, health
-// [LIBRARIES] ------------------------------------------------------------------------------------------
-#include "LOGIC.h"      // Example on how you should comment every line
-#include <windows.h>    // Windows APT library
-#include <math.h>
-#include <stdlib.h>
-#include <string.h>
-#include <time.h>
-#include <stdio.h>
+// ===== BIDUL ADVENTURES: Full 3D FPS with enemies, projectiles, health =====
+// [LIBRARIES] ====================================================================================
+#include "LOGIC.h"      // Core game definitions (structs, function declarations)
+#include <windows.h>    // Windows API library  (CreateWindow, MessageBox, etc)
+#include <math.h>       // Math library (cos, sin, sqrt, atan2) 
+#include <stdlib.h>     // Standard library (malloc, free, rand, srand)
+#include <string.h>     // String operations (memset, memcpy)
+#include <time.h>       // Time functions (time() for random seed)
+#include <stdio.h>      // File I/O (fopen, fread for image loading)
 
-// ===== CLOCK =====
-static LARGE_INTEGER g_freq;
-static LARGE_INTEGER g_start;
-static double g_tick_interval;
+// ===== MEMORY POOL (from init.c merged here) ===================================================
+#define MEMORY_SIZE_BYTES (512 * 1024 * 1024)  // 512 MiB for all dynamic allocations
+
+static uint8_t g_memory_pool[MEMORY_SIZE_BYTES];  // Static memory pool array (allocated at startup)
+
+typedef struct {                           // Memory pool tracking struct
+    uint8_t* base;                         // Pointer to memory pool start
+    uint32_t size;                         // Total size in bytes
+    uint32_t used;                         // Already-allocated bytes
+} MemoryPool;
+
+static MemoryPool g_pool;                  // Global memory pool instance
+
+void init(void) {                          // Initialize memory pool for game startup
+    g_pool.base = g_memory_pool;           // Point to static pool array
+    g_pool.size = MEMORY_SIZE_BYTES;       // Set total pool size
+    g_pool.used = 0;                       // Start with zero bytes used
+}
+
+// ===== CLOCK (High-Resolution Timer) ========================================================
+static LARGE_INTEGER g_freq;               // CPU frequency counter (for timing)
+static LARGE_INTEGER g_start;              // Timer start point
+static double g_tick_interval;             // Time per frame (1/165 seconds)
+
 
 void clock_init(void) {
     // Get high-res timer frequency
@@ -71,114 +91,328 @@ Texture g_textures[MAX_TEXTURES];  // Index 0=normal, 1=red, 2=boss
 // Spawn timer - spawns new enemies every 5 seconds (0.125 * boss every 5 sec = 1 boss every 40 sec)
 double g_spawn_timer = 0.0;
 
-// ===== IMAGE LOADING (PNG support using Windows GDI+) =====
-// Load a PNG file and convert to bitmap
-// Parameters: filename = path to PNG, texture = pointer to texture struct to fill
-// Returns: 1 on success, 0 on failure
-int load_png_to_texture(const char *filename, Texture *texture) {
-    // Attempt to load using Windows API (GDI+)
-    // For now, return failure - user can provide BMP files instead
-    // TODO: Implement full PNG loading using GDI+ or stb_image.h
-    texture->loaded = 0;
-    texture->width = 0;
-    texture->height = 0;
-    texture->pixels = NULL;
-    return 0;
-}
+// ===== IMAGE LOADING (BMP format with procedural fallback) ===================================
+// BMP file header structure (only what we need)
+#pragma pack(1)                            // Pack structs without padding
+typedef struct {
+    uint16_t signature;                    // "BM" = 0x424D
+    uint32_t file_size;                    // File size in bytes
+    uint16_t reserved1;                    // Reserved (must be 0)
+    uint16_t reserved2;                    // Reserved (must be 0)
+    uint32_t pixel_offset;                 // Offset to pixel data
+} BMPFileHeader;
 
-// Create a simple test texture with solid color (fallback when PNG fails)
-// Parameters: color = BGR packed color value, texture = pointer to texture struct
-// Returns: 1 on success
-int create_solid_texture(uint32_t color, Texture *texture) {
-    // Allocate memory for a small 32x32 solid color texture
-    texture->pixels = (uint32_t*)malloc(32 * 32 * sizeof(uint32_t));
-    if (!texture->pixels) return 0;         // Memory allocation failed
-    
-    // Fill entire texture with the specified color
-    for (int i = 0; i < 32 * 32; i++) {
-        // Set each pixel to the solid color
-        texture->pixels[i] = color;
+typedef struct {
+    uint32_t header_size;                  // DIB header size
+    int32_t width;                         // Image width in pixels
+    int32_t height;                        // Image height in pixels
+    uint16_t planes;                       // Color planes (must be 1)
+    uint16_t bits_per_pixel;               // Bits per pixel (24 or 32)
+    uint32_t compression;                  // Compression type (0 = none)
+    uint32_t image_size;                   // Image data size
+    int32_t x_pixels_per_meter;            // Horizontal resolution
+    int32_t y_pixels_per_meter;            // Vertical resolution
+    uint32_t num_colors;                   // Number of colors in palette
+    uint32_t important_colors;             // Important colors count
+} BMPInfoHeader;
+#pragma pack()
+
+// Load BMP file from disk
+// Parameters: path = file path, texture = output texture struct
+// Returns: 1 if loaded successfully, 0 if load failed
+int load_bmp_file(const char *path, Texture *texture) {
+    FILE *file = fopen(path, "rb");        // Open file in binary read mode
+    if (!file) {                           // If file doesn't exist
+        return 0;                          // Return failure
     }
-    
-    // Set texture dimensions to 32x32 pixels
-    texture->width = 32;
-    texture->height = 32;
-    texture->loaded = 1;                    // Mark texture as loaded
+
+    BMPFileHeader file_header;             // BMP file header
+    size_t read = fread(&file_header, sizeof(BMPFileHeader), 1, file);  // Read header
+    if (read != 1 || file_header.signature != 0x424D) {  // Check "BM" signature
+        fclose(file);                      // Close file on error
+        return 0;                          // Invalid BMP file
+    }
+
+    BMPInfoHeader info_header;             // BMP info header
+    fread(&info_header, sizeof(BMPInfoHeader), 1, file);  // Read info
+    if (info_header.width <= 0 || info_header.height <= 0) {  // Check dimensions
+        fclose(file);                      // File is invalid
+        return 0;
+    }
+
+    // Allocate memory for texture pixels
+    int num_pixels = info_header.width * abs(info_header.height);  // Total pixels
+    texture->pixels = (uint32_t*)malloc(num_pixels * sizeof(uint32_t));  // Allocate buffer
+    if (!texture->pixels) {                // Memory allocation failed
+        fclose(file);
+        return 0;
+    }
+
+    // Set texture dimensions
+    texture->width = info_header.width;    // Store width
+    texture->height = abs(info_header.height);  // Store height (absolute value)
+
+    // Seek to pixel data
+    fseek(file, file_header.pixel_offset, SEEK_SET);  // Jump to pixel start
+
+    // Read 24-bit BGR data and convert to 32-bit BGRA
+    if (info_header.bits_per_pixel == 24) {
+        // For each scanline (BMP stores upside-down)
+        for (int y = 0; y < texture->height; y++) {
+            for (int x = 0; x < texture->width; x++) {
+                uint8_t b, g, r;           // Read BGR bytes
+                fread(&b, 1, 1, file);     // Read blue channel
+                fread(&g, 1, 1, file);     // Read green channel
+                fread(&r, 1, 1, file);     // Read red channel
+                // Pack into 32-bit BGRA (with alpha = 255)
+                uint32_t pixel = (255 << 24) | (r << 16) | (g << 8) | b;
+                texture->pixels[y * texture->width + x] = pixel;  // Write pixel
+            }
+        }
+    } else if (info_header.bits_per_pixel == 32) {
+        // 32-bit BGRA (already in correct format)
+        fread(texture->pixels, num_pixels * sizeof(uint32_t), 1, file);  // Read all pixels
+    } else {
+        // Unsupported bit depth
+        free(texture->pixels);             // Free allocated memory
+        fclose(file);
+        return 0;
+    }
+
+    fclose(file);                          // Close file when done
+    texture->loaded = 1;                   // Mark as successfully loaded
     return 1;
 }
 
-// ===== MAZE GENERATION =====
-// Generate a random maze using recursive maze algorithm
-// Parameters: none
-// Returns: void - modifies g_world_map directly
-void generate_random_maze(void) {
-    // Clear the entire world map to empty (0 = walkable)
-    memset(g_world_map, 0, sizeof(g_world_map));
-    
-    // Create border walls around entire map (keep player contained)
-    for (int i = 0; i < WORLD_WIDTH; i++) {
-        // Top border wall (y=0)
-        g_world_map[0][i] = 1;
-        // Bottom border wall (y=255)
-        g_world_map[WORLD_HEIGHT - 1][i] = 1;
-    }
-    
-    // Create vertical borders on left and right sides
-    for (int i = 0; i < WORLD_HEIGHT; i++) {
-        // Left border wall (x=0)
-        g_world_map[i][0] = 1;
-        // Right border wall (x=255)
-        g_world_map[i][WORLD_WIDTH - 1] = 1;
-    }
-    
-    // Generate random inner walls for maze structure
-    // Use simple grid pattern with random walls between tiles
-    for (int y = 5; y < WORLD_HEIGHT - 5; y += 20) {
-        for (int x = 5; x < WORLD_WIDTH - 5; x += 20) {
-            // Place wall tiles at random positions to create maze corridors
-            int wall_type = 1 + (rand() % 7);  // Wall variant 1-7
-            g_world_map[y][x] = wall_type;
-            
-            // Add connecting walls perpendicular to create maze paths
-            if ((rand() % 100) < 50) {
-                // Randomly place horizontal wall segment
-                g_world_map[y][x + 5] = wall_type;
-                g_world_map[y][x + 10] = wall_type;
+// Create procedurally generated texture with pattern
+// Parameters: type = entity type (0=normal, 1=red, 2=boss), texture = output texture
+// Returns: 1 on success
+int create_procedural_texture(int type, Texture *texture) {
+    // Allocate 256x256 pixel texture
+    int size = 256;                        // Texture size in pixels
+    int num_pixels = size * size;          // Total pixel count
+    texture->pixels = (uint32_t*)malloc(num_pixels * sizeof(uint32_t));  // Allocate memory
+    if (!texture->pixels) return 0;        // Failed to allocate
+
+    texture->width = size;                 // Set width
+    texture->height = size;                // Set height
+
+    // Generate different pattern for each entity type
+    if (type == 0) {
+        // NORMAL ENEMY: Orange with stipple pattern
+        uint32_t base_color = 0x0080FF;    // Orange in BGR
+        for (int i = 0; i < num_pixels; i++) {
+            // Checkerboard stipple for texture effect
+            int x = i % size;              // Get X coordinate
+            int y = i / size;              // Get Y coordinate
+            if ((x + y) % 4 < 2) {
+                texture->pixels[i] = base_color;  // Base orange
+            } else {
+                // Slightly darker for depth
+                texture->pixels[i] = (base_color >> 1) & 0x7F7FFF;
             }
-            
-            // Add vertical wall segments
-            if ((rand() % 100) < 50) {
-                // Randomly place vertical wall segment
-                g_world_map[y + 5][x] = wall_type;
-                g_world_map[y + 10][x] = wall_type;
+        }
+    } else if (type == 1) {
+        // RED AGGRESSIVE: Bright red with noise pattern
+        uint32_t base_color = 0x0000FF;    // Bright red in BGR
+        for (int i = 0; i < num_pixels; i++) {
+            int x = i % size;
+            int y = i / size;
+            // Add noise based on position
+            int noise = ((x * 73 + y * 97) % 256);  // Pseudo-random noise
+            if (noise > 200) {
+                texture->pixels[i] = base_color;   // Bright red
+            } else if (noise > 100) {
+                texture->pixels[i] = (base_color >> 1) & 0x7F7FFF;  // Dark red
+            } else {
+                texture->pixels[i] = (base_color >> 2) & 0x3F3FFF;  // Very dark red
+            }
+        }
+    } else {
+        // BOSS: Magenta with hexagon pattern
+        uint32_t base_color = 0xFF00FF;    // Magenta in BGR
+        for (int i = 0; i < num_pixels; i++) {
+            int x = i % size;
+            int y = i / size;
+            // Create hexagon-like pattern
+            int dist = (abs(x - 128) + abs(y - 128)) / 16;  // Distance from center
+            if (dist % 3 == 0) {
+                texture->pixels[i] = base_color;   // Bright magenta
+            } else {
+                texture->pixels[i] = (base_color >> 1) & 0x7F7FFF;  // Dark magenta
             }
         }
     }
+
+    texture->loaded = 1;                   // Mark as successfully generated
+    return 1;
+}
+
+// Load texture with fallback chain
+// Attempts: PNG → BMP → Procedural generation
+void load_entity_texture(int type, const char *filename) {
+    Texture *tex = &g_textures[type];       // Get texture slot for this type
     
-    // Add scattered obstacles throughout the maze for variety
-    for (int i = 0; i < 60; i++) {
+    // Try to load from graphics folder
+    char path[512];                        // Path buffer
+    snprintf(path, sizeof(path), "src/GRAPHICS_SOUNDS/GRAPHICS/%s", filename);  // Build path
+
+    // First, try BMP file
+    char bmp_path[512];                    // BMP path buffer
+    snprintf(bmp_path, sizeof(bmp_path), "%s.bmp", filename);  // Replace extension
+    if (load_bmp_file(bmp_path, tex)) {    // Try loading as BMP
+        return;                            // Success - exit
+    }
+
+    // Second, try PNG file (will fail without proper library)
+    if (load_bmp_file(filename, tex)) {    // Try original filename (PNG)
+        return;                            // Success - exit
+    }
+
+    // Fallback: Generate procedural texture
+    create_procedural_texture(type, tex);  // Create pattern-based texture
+}
+
+
+// ===== MAZE GENERATION (for 512x512 huge world) ===========================================
+// Generate massive random maze using cellular automata algorithm
+// Parameters: none
+// Returns: void - modifies g_world_map directly
+void generate_random_maze(void) {
+    // Clear entire map to empty walkable space
+    memset(g_world_map, 0, sizeof(g_world_map));  // Fill with zeros (empty)
+
+    // Create solid border walls (keep player bounded)
+    for (int x = 0; x < WORLD_WIDTH; x++) {
+        g_world_map[0][x] = 1;             // Top border
+        g_world_map[WORLD_HEIGHT - 1][x] = 1;  // Bottom border
+    }
+    for (int y = 0; y < WORLD_HEIGHT; y++) {
+        g_world_map[y][0] = 1;             // Left border
+        g_world_map[y][WORLD_WIDTH - 1] = 1;   // Right border
+    }
+
+    // Create large room structure - divide into quadrants with walls
+    // This creates multiple distinct areas connected by corridors
+    int rooms_x = 4;                       // Number of rooms horizontally
+    int rooms_y = 4;                       // Number of rooms vertically
+    int room_width = WORLD_WIDTH / rooms_x;  // Width of each room
+    int room_height = WORLD_HEIGHT / rooms_y;  // Height of each room
+
+    // Create room grid with thick walls between rooms
+    for (int ry = 0; ry < rooms_y; ry++) {
+        for (int rx = 0; rx < rooms_x; rx++) {
+            // Fill walls at the boundaries of each room
+            int x_start = rx * room_width;      // Left edge of room
+            int y_start = ry * room_height;     // Top edge of room
+            int x_end = (rx + 1) * room_width;  // Right edge of room
+            int y_end = (ry + 1) * room_height; // Bottom edge of room
+
+            // Create vertical walls on left side of room
+            for (int y = y_start; y < y_end; y++) {
+                g_world_map[y][x_start] = 2;   // Wall type 2
+                g_world_map[y][x_start + 1] = 2;  // Double thickness
+            }
+
+            // Create horizontal walls on top of room
+            for (int x = x_start; x < x_end; x++) {
+                g_world_map[y_start][x] = 2;   // Wall type 2
+                g_world_map[y_start + 1][x] = 2;  // Double thickness
+            }
+        }
+    }
+
+    // Create random inner obstacles and structures throughout the map
+    // This adds complexity and variety to gameplay
+    for (int i = 0; i < 300; i++) {
         // Pick random location in playable area
         int x = 20 + (rand() % (WORLD_WIDTH - 40));
         int y = 20 + (rand() % (WORLD_HEIGHT - 40));
-        
-        // Place random wall variant
+
+        // Randomly create wall structures
         if (g_world_map[y][x] == 0) {
-            g_world_map[y][x] = 1 + (rand() % 7);
+            int wall_type = 1 + (rand() % 7);  // Random wall variant 1-7
+            
+            // Create clusters of walls (not just isolated pixels)
+            int size = 1 + (rand() % 4);       // Size of structure (1-4 tiles)
+            for (int dy = -size; dy <= size; dy++) {
+                for (int dx = -size; dx <= size; dx++) {
+                    int nx = x + dx;           // Neighbor X
+                    int ny = y + dy;           // Neighbor Y
+                    if (nx > 1 && nx < WORLD_WIDTH - 1 && ny > 1 && ny < WORLD_HEIGHT - 1) {
+                        if (g_world_map[ny][nx] == 0) {  // Only fill empty spaces
+                            g_world_map[ny][nx] = wall_type;  // Place wall
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Create open pathways (corridors) by clearing random lines
+    // This ensures the maze is traversable and not too dense
+    for (int i = 0; i < 50; i++) {
+        // Pick random corridor endpoints
+        int x1 = 30 + (rand() % (WORLD_WIDTH - 60));  // Start X
+        int y1 = 30 + (rand() % (WORLD_HEIGHT - 60));  // Start Y
+        int x2 = 30 + (rand() % (WORLD_WIDTH - 60));  // End X
+        int y2 = 30 + (rand() % (WORLD_HEIGHT - 60));  // End Y
+
+        // Draw line clearing between the two points
+        int dx = x2 - x1;                  // X distance
+        int dy = y2 - y1;                  // Y distance
+        int steps = abs(dx) > abs(dy) ? abs(dx) : abs(dy);  // Number of steps
+        if (steps == 0) steps = 1;         // Avoid division by zero
+
+        for (int step = 0; step < steps; step++) {
+            // Calculate interpolated position
+            int x = x1 + (dx * step) / steps;  // Current X
+            int y = y1 + (dy * step) / steps;  // Current Y
+
+            // Clear a few tiles wide corridor
+            for (int cy = y - 2; cy <= y + 2; cy++) {
+                for (int cx = x - 2; cx <= x + 2; cx++) {
+                    if (cx > 1 && cx < WORLD_WIDTH - 1 && cy > 1 && cy < WORLD_HEIGHT - 1) {
+                        g_world_map[cy][cx] = 0;  // Clear to empty
+                    }
+                }
+            }
+        }
+    }
+
+    // Create symmetrical puzzle-like sections for visual interest
+    int puzzle_x = 100 + (rand() % 300);   // Random X position for puzzle
+    int puzzle_y = 100 + (rand() % 300);   // Random Y position for puzzle
+    for (int i = 0; i < 30; i++) {
+        // Draw concentric square patterns
+        int dist = i * 3;                  // Distance from center
+        for (int x = puzzle_x - dist; x <= puzzle_x + dist; x++) {
+            for (int y = puzzle_y - dist; y <= puzzle_y + dist; y++) {
+                // Only draw on the perimeter of the square (not filled)
+                if ((x == puzzle_x - dist || x == puzzle_x + dist ||
+                    y == puzzle_y - dist || y == puzzle_y + dist) &&
+                    x > 10 && x < WORLD_WIDTH - 10 && y > 10 && y < WORLD_HEIGHT - 10) {
+                    if (g_world_map[y][x] == 0) {
+                        g_world_map[y][x] = 3 + (i % 5);  // Alternating wall types
+                    }
+                }
+            }
         }
     }
 }
 
-// Init game
+
+// ===== GAME INITIALIZATION =====================================================================
 void game_init(void) {
     // ===== PLAYER INITIALIZATION =====
     // Set initial player position to world center
-    g_player.pos.x = 128.0;                // Player X coordinate in world units
-    g_player.pos.y = 128.0;                // Player Y coordinate in world units
-    g_player.pos.z = 0.0;                  // Player Z coordinate (height)
+    g_player.pos.x = 256.0;                // Player X coordinate (center of huge map)
+    g_player.pos.y = 256.0;                // Player Y coordinate (center of huge map)
+    g_player.pos.z = 0.0;                  // Player Z coordinate (height/elevation)
     
     // Set player rotation angles to zero (looking forward)
     g_player.angle_yaw = 0.0;              // Left-right rotation (horizontal camera)
-    g_player.angle_pitch = 0.0;            // Up-down rotation (vertical camera)
+    g_player.angle_pitch = 0.0;            // Up-down rotation (vertical camera tilt)
     
     // Initialize velocity to zero (player starts stationary)
     g_player.vel.x = 0.0;                  // X velocity (units/sec)
@@ -186,54 +420,54 @@ void game_init(void) {
     g_player.vel.z = 0.0;                  // Z velocity (vertical movement)
     
     // Set player health to maximum
-    g_player.health = 100.0;               // Current health points
+    g_player.health = 100.0;               // Current health points (0-100 range)
     g_player.max_health = 100.0;           // Maximum health capacity
     
     // Initialize weapon state
-    g_player.shoot_cooldown = 0.0;         // Time until next shot is ready
-    g_player.shoot_recoil = 0.0;           // Gun kickback animation state (0-1)
+    g_player.shoot_cooldown = 0.0;         // Time until next shot is ready (seconds)
+    g_player.shoot_recoil = 0.0;           // Gun kickback animation state (0-1 range)
     
     // ===== MAZE GENERATION =====
-    // Generate random maze structure for this play session
+    // Generate huge random maze structure for this play session
     generate_random_maze();                // Create maze layout in g_world_map
     
-    // ===== TEXTURE LOADING =====
-    // Initialize all three entity texture types with fallback colors
-    // Texture 0: Normal enemy - orange color (0x0080FF in BGR)
-    create_solid_texture(0x0080FF, &g_textures[0]);
+    // ===== TEXTURE LOADING WITH FALLBACK =====
+    // Load entity textures with fallback to procedural generation
     
-    // Texture 1: Red aggressive enemy - bright red (0x0000FF in BGR)
-    create_solid_texture(0x0000FF, &g_textures[1]);
+    // Texture 0: Normal enemy texture
+    load_entity_texture(0, "NORMAL_ENTITIY.png");  // Try to load NORMAL_ENTITIY.png or .bmp
     
-    // Texture 2: Boss enemy - magenta color (0xFF00FF in BGR)
-    create_solid_texture(0xFF00FF, &g_textures[2]);
-    // TODO: Load actual PNG graphics from GRAPHICS folder when GDI+ support added
+    // Texture 1: Red aggressive enemy texture
+    load_entity_texture(1, "RED_AGRESSIVE_ENTITIY.png");  // Try to load RED_AGRESSIVE_ENTITIY.png
+    
+    // Texture 2: Boss enemy texture
+    load_entity_texture(2, "BOSS_ENTITY.png");     // Try to load BOSS_ENTITY.png or .bmp
     
     // ===== MEMORY ALLOCATION =====
     // Allocate dynamic arrays for entities (enemies)
-    g_entities = (Entity*)malloc(MAX_ENTITIES * sizeof(Entity));
+    g_entities = (Entity*)malloc(MAX_ENTITIES * sizeof(Entity));  // Allocate entity array
     
     // Allocate dynamic array for projectiles (bullets)
-    g_projectiles = (Projectile*)malloc(MAX_PROJECTILES * sizeof(Projectile));
+    g_projectiles = (Projectile*)malloc(MAX_PROJECTILES * sizeof(Projectile));  // Allocate projectile array
     
     // Initialize entity and projectile counters to zero
-    g_entity_count = 0;                    // Number of active entities
-    g_projectile_count = 0;                // Number of active projectiles
+    g_entity_count = 0;                    // Number of active entities (starts at 0)
+    g_projectile_count = 0;                // Number of active projectiles (starts at 0)
     g_drop_count = 0;                      // Number of falling drops (HUD effect)
-    g_drop_timer = 0.0;                    // Timer for drop spawning effect
+    g_drop_timer = 0.0;                    // Timer for drop spawning effect (milliseconds)
     
     // Initialize spawn system timer
     g_spawn_timer = 0.0;                   // Reset spawn timer for 5-second spawning intervals
     
     // ===== INITIAL ENEMY SPAWNING =====
     // Seed random number generator with current time for variety
-    srand(time(NULL));
+    srand(time(NULL));                     // Seed with current system time
     
     // Spawn initial wave of normal enemies (5 total)
     for (int i = 0; i < 5; i++) {
-        // Generate random spawn position in playable area
-        double x = 30.0 + (rand() % 180);  // Random X between 30-210
-        double y = 30.0 + (rand() % 180);  // Random Y between 30-210
+        // Generate random spawn position in playable area of huge map
+        double x = 50.0 + (rand() % 400);  // Random X between 50-450 (avoid edges)
+        double y = 50.0 + (rand() % 400);  // Random Y between 50-450 (avoid edges)
         // Spawn normal enemy at this location with Z=0
         spawn_normal_enemy(x, y, 0.0);
     }
@@ -241,18 +475,19 @@ void game_init(void) {
     // Spawn initial wave of red aggressive enemies (2 total)
     for (int i = 0; i < 2; i++) {
         // Generate random spawn position in slightly more central area
-        double x = 40.0 + (rand() % 160);  // Random X between 40-200
-        double y = 40.0 + (rand() % 160);  // Random Y between 40-200
+        double x = 100.0 + (rand() % 300);  // Random X between 100-400
+        double y = 100.0 + (rand() % 300);  // Random Y between 100-400
         // Spawn red aggressive enemy at this location
         spawn_red_enemy(x, y, 0.0);
     }
     
     // Spawn initial boss enemy (1 total, placed centrally)
-    spawn_boss(128.0, 80.0, 0.0);          // Boss spawns at center-ish location
+    spawn_boss(256.0, 256.0, 0.0);         // Boss spawns at center location
     
     // Debug message to confirm initialization
-    MessageBoxA(NULL, "Game initialized - Maze generated with textures!", "Debug", MB_OK);
+    MessageBoxA(NULL, "Game initialized!\nHuge 512x512 maze with texture loading enabled", "BIDUL ADVENTURES", MB_OK);
 }
+
 
 void game_cleanup(void) {
     // Free entity array if allocated
