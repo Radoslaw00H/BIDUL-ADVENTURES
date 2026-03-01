@@ -177,6 +177,7 @@ static double g_death_timer = 0.0;                // Time since death
 static LARGE_INTEGER g_freq;                      // QueryPerformanceFrequency
 static LARGE_INTEGER g_start;                     // Start time
 static double g_tick_interval;                    // Frame time interval (6.06ms at 165Hz)
+static double g_anim_time = 0.0;                  // Global animation time for effects
 
 // Windows API globals
 HWND g_hwnd = NULL;                               // Window handle
@@ -537,21 +538,29 @@ void generate_random_maze(void) {
             int x2 = rooms[nearest].x;                          // Ending X
             int y2 = rooms[nearest].y;                          // Ending Y
             
-            // Horizontal corridor first
+            // Horizontal corridor first - WITH BOUNDS CHECKING
             int corridor_x_start = (x1 < x2) ? x1 : x2;        // Start from left
             int corridor_x_end = (x1 < x2) ? x2 : x1;          // End at right
-            for (int x = corridor_x_start; x < corridor_x_end; x++) {
-                if (g_world_map[y1][x] != 0) {                 // If not already floor
-                    g_world_map[y1][x] = 0;                    // Carve corridor
+            if (y1 >= 0 && y1 < WORLD_HEIGHT) {              // Check y1 is valid
+                for (int x = corridor_x_start; x < corridor_x_end; x++) {
+                    if (x >= 0 && x < WORLD_WIDTH) {           // Check x is valid
+                        if (g_world_map[y1][x] != 0) {         // If not already floor
+                            g_world_map[y1][x] = 0;            // Carve corridor
+                        }
+                    }
                 }
             }
             
-            // Vertical corridor second
+            // Vertical corridor second - WITH BOUNDS CHECKING
             int corridor_y_start = (y1 < y2) ? y1 : y2;        // Start from top
             int corridor_y_end = (y1 < y2) ? y2 : y1;          // End at bottom
-            for (int y = corridor_y_start; y < corridor_y_end; y++) {
-                if (g_world_map[y][x2] != 0) {                 // If not already floor
-                    g_world_map[y][x2] = 0;                    // Carve corridor
+            if (x2 >= 0 && x2 < WORLD_WIDTH) {               // Check x2 is valid
+                for (int y = corridor_y_start; y < corridor_y_end; y++) {
+                    if (y >= 0 && y < WORLD_HEIGHT) {          // Check y is valid
+                        if (g_world_map[y][x2] != 0) {         // If not already floor
+                            g_world_map[y][x2] = 0;            // Carve corridor
+                        }
+                    }
                 }
             }
         }
@@ -609,7 +618,7 @@ void game_init(void) {
     g_player.pos.y = 256.0;                                       // Center Y coordinate
     g_player.pos.z = 1.0;                                         // Eye height 1.0 unit
     g_player.health = 350.0;                                      // Full health (350 HP)
-    g_player.max_health = 100.0;                                  // Max capacity
+    g_player.max_health = 350.0;                                  // Max capacity (350 HP)
     
     // Load textures with fallback
     load_entity_texture();                                        // Load or generate textures
@@ -861,6 +870,7 @@ RayHit raycast(double x, double y, double z, double angle_yaw, double angle_pitc
 // Update game logic and physics
 void game_update(void) {
     double dt = 1.0 / 165.0;  // Delta time
+    g_anim_time += dt;         // Increment global animation time for effects
     
     // === PLAYER PHYSICS ===
     // Build velocity from parallel key inputs
@@ -1504,11 +1514,11 @@ void game_render(uint32_t* backbuffer, int width, int height) {
             uint8_t g = (uint8_t)(100.0 * (1.0 - t * 0.7));
             uint8_t b = (uint8_t)(30.0 * (1.0 - t * 0.8));
             
-            // Add cloud effect using sine waves
+            // Add cloud effect
             double cloud_x = (double)col / (double)width;
             double cloud_y = t;
-            double cloud_val = sin(cloud_x * 6.0 + g_tick_interval * 0.5) * 0.5 + 0.5;
-            cloud_val *= sin(cloud_y * 3.0) * 0.3 + 0.7;  // Vary vertically too
+            double cloud_val = sin(cloud_x * 6.0 + g_anim_time * 0.5) * 0.5 + 0.5;
+            cloud_val *= sin(cloud_y * 3.0) * 0.3 + 0.7;
             
             // Blend clouds into base color
             uint8_t cloud_intensity = (uint8_t)(cloud_val * 40.0);
