@@ -204,8 +204,8 @@ void init(void) {
     g_player.pos.z = 1.0;                // Eye height 1.0
     g_player.angle_yaw = 0.0;            // Looking north
     g_player.angle_pitch = 0.0;          // Looking level
-    g_player.health = 100.0;             // Full health
-    g_player.max_health = 100.0;         // Max health capacity
+    g_player.health = 350.0;             // Full health (350 HP)
+    g_player.max_health = 350.0;         // Max health capacity (350 HP)
     g_player.shoot_cooldown = 0.0;       // Ready to shoot
     g_player.shoot_recoil = 0.0;         // No recoil
 }
@@ -383,14 +383,23 @@ Texture create_procedural_texture(uint8_t type) {
 // Load entity textures from BMP files with fallback
 void load_entity_texture(void) {
     // Load entity textures from files in order
+    const char *texture_names[] = {"NORMAL_ENTITIY.bmp", "RED_AGRESSIVE_ENTITIY.bmp", "BOSS_ENTITY.bmp"};
+    
     for (int i = 0; i < MAX_TEXTURES; i++) {
         char filename[256];                                     // Buffer for filename
-        snprintf(filename, sizeof(filename), "textures/entity_%d.bmp", i);  // Construct path
+        // Try correct path first: src/GRAPHICS_SOUNDS/GRAPHICS/
+        snprintf(filename, sizeof(filename), "src/GRAPHICS_SOUNDS/GRAPHICS/%s", texture_names[i]);  // Full path
         
         // Try to load from disk
         g_textures[i] = load_bmp_file(filename);                // Attempt file load
         
-        // If failed, use procedural fallback
+        // If failed, try alternative path
+        if (!g_textures[i].loaded) {
+            snprintf(filename, sizeof(filename), "GRAPHICS_SOUNDS/GRAPHICS/%s", texture_names[i]);  // Relative path
+            g_textures[i] = load_bmp_file(filename);
+        }
+        
+        // If still failed, use procedural fallback
         if (!g_textures[i].loaded) {
             printf("Using procedural texture for entity %d\n", i);  // Log fallback
             g_textures[i] = create_procedural_texture(i);      // Generate procedurally
@@ -401,6 +410,39 @@ void load_entity_texture(void) {
 // ===== MAZE GENERATION =====
 
 // Generate random maze with rooms, corridors, obstacles
+// Check if there's a line of sight between two points (used for visibility)
+int has_line_of_sight(double x1, double y1, double x2, double y2) {
+    // Simple raycast check - see if direct path is blocked
+    double dx = x2 - x1;                                        // Delta X
+    double dy = y2 - y1;                                        // Delta Y
+    double dist = sqrt(dx * dx + dy * dy);                      // Direct distance
+    
+    if (dist < 0.1) return 1;                                  // Same point = visible
+    
+    // Step along line from start to end
+    double steps = (int)(dist * 2) + 1;                         // Number of steps
+    for (double i = 0; i <= steps; i++) {
+        double t = i / steps;                                   // Parameter 0-1
+        double cx = x1 + dx * t;                                // Current X
+        double cy = y1 + dy * t;                                // Current Y
+        
+        int gx = (int)cx;                                       // Grid X
+        int gy = (int)cy;                                       // Grid Y
+        
+        // Check bounds
+        if (gx < 0 || gx >= WORLD_WIDTH || gy < 0 || gy >= WORLD_HEIGHT) {
+            return 0;                                           // Out of bounds = blocked
+        }
+        
+        // Check for wall
+        if (g_world_map[gy][gx] != 0) {
+            return 0;                                           // Wall blocks line of sight
+        }
+    }
+    
+    return 1;                                                   // Path is clear
+}
+
 void generate_random_maze(void) {
     // Room structure for maze generation
     typedef struct {
@@ -415,29 +457,46 @@ void generate_random_maze(void) {
         }
     }
     
-    // Generate rooms - large empty spaces scattered through maze
-    Room rooms[32];                                             // Array of 32 rooms max
-    int room_count = 0;                                         // Current room count
+    // Create guaranteed starting room (player spawn area)
+    int spawn_room_x = 256;                                     // Center X
+    int spawn_room_y = 256;                                     // Center Y
+    int spawn_room_w = 25;                                      // 50x50 starting room
+    int spawn_room_h = 25;                                      // Guaranteed open area
+    for (int yy = spawn_room_y - spawn_room_h; yy < spawn_room_y + spawn_room_h; yy++) {
+        for (int xx = spawn_room_x - spawn_room_w; xx < spawn_room_x + spawn_room_w; xx++) {
+            if (xx >= 0 && xx < WORLD_WIDTH && yy >= 0 && yy < WORLD_HEIGHT) {
+                g_world_map[yy][xx] = 0;                       // Force floor in spawn area
+            }
+        }
+    }
     
-    for (int i = 0; i < 30; i++) {                              // Try to place 30 rooms
-        int x = 50 + (rand() % (WORLD_WIDTH - 150));            // Random X (leave border)
-        int y = 50 + (rand() % (WORLD_HEIGHT - 150));           // Random Y (leave border)
-        int w = 30 + (rand() % 40);                             // Random width 30-70
-        int h = 30 + (rand() % 40);                             // Random height 30-70
+    // Generate rooms - large empty spaces scattered through maze
+    Room rooms[40];                                             // Array of 40 rooms max
+    int room_count = 1;                                         // Start with spawn room already placed
+    rooms[0].x = spawn_room_x;                                  // Add spawn room to list
+    rooms[0].y = spawn_room_y;                                  // Room center
+    rooms[0].w = spawn_room_w * 2;                              // Room dimensions
+    rooms[0].h = spawn_room_h * 2;
+    
+    for (int i = 0; i < 40; i++) {                              // Try to place 40 rooms (more for bigger map)
+        int x = 60 + (rand() % (WORLD_WIDTH - 120));            // Random X (leave more border)
+        int y = 60 + (rand() % (WORLD_HEIGHT - 120));           // Random Y
+        int w = 35 + (rand() % 45);                             // Larger rooms 35-80
+        int h = 35 + (rand() % 45);                             // Larger rooms 35-80
         
         // Check for room overlaps with existing rooms
         int overlaps = 0;                                       // Overlap counter
         for (int j = 0; j < room_count; j++) {
             int dx = abs(x - rooms[j].x);                       // X distance between rooms
             int dy = abs(y - rooms[j].y);                       // Y distance between rooms
-            int min_dist = (w + rooms[j].w) / 2 + 20;          // Minimum separation needed
+            int min_dist = (w + rooms[j].w) / 2 + 15;          // Minimum separation needed
             
             if (dx < min_dist && dy < min_dist) {
                 overlaps = 1;                                   // Mark as overlapping
             }
         }
         
-        if (!overlaps && room_count < 32) {
+        if (!overlaps && room_count < 40) {
             rooms[room_count].x = x;                            // Store room X
             rooms[room_count].y = y;                            // Store room Y
             rooms[room_count].w = w;                            // Store room width
@@ -455,44 +514,61 @@ void generate_random_maze(void) {
         }
     }
     
-    // Connect rooms with corridors
-    for (int i = 0; i < room_count - 1; i++) {
-        int x1 = rooms[i].x;                                    // Starting X
-        int y1 = rooms[i].y;                                    // Starting Y
-        int x2 = rooms[i+1].x;                                  // Ending X
-        int y2 = rooms[i+1].y;                                  // Ending Y
+    // Connect rooms with corridors - connect to nearest room
+    for (int i = 0; i < room_count; i++) {
+        // Find nearest unconnected room
+        int nearest = -1;                                       // Nearest room index
+        double nearest_dist = 999999.0;                         // Very large distance
         
-        // Horizontal corridor first
-        int corridor_x_start = (x1 < x2) ? x1 : x2;            // Start from left
-        int corridor_x_end = (x1 < x2) ? x2 : x1;              // End at right
-        for (int x = corridor_x_start; x < corridor_x_end; x++) {
-            if (g_world_map[y1][x] != 0) {                     // If not already floor
-                g_world_map[y1][x] = 0;                        // Carve corridor
+        for (int j = i + 1; j < room_count; j++) {
+            double dx = rooms[j].x - rooms[i].x;                // X distance
+            double dy = rooms[j].y - rooms[i].y;                // Y distance
+            double d = sqrt(dx * dx + dy * dy);                 // Euclidean distance
+            
+            if (d < nearest_dist) {
+                nearest_dist = d;                               // Update nearest
+                nearest = j;                                    // Store index
             }
         }
         
-        // Vertical corridor second
-        int corridor_y_start = (y1 < y2) ? y1 : y2;            // Start from top
-        int corridor_y_end = (y1 < y2) ? y2 : y1;              // End at bottom
-        for (int y = corridor_y_start; y < corridor_y_end; y++) {
-            if (g_world_map[y][x2] != 0) {                     // If not already floor
-                g_world_map[y][x2] = 0;                        // Carve corridor
+        if (nearest != -1) {
+            int x1 = rooms[i].x;                                // Starting X
+            int y1 = rooms[i].y;                                // Starting Y
+            int x2 = rooms[nearest].x;                          // Ending X
+            int y2 = rooms[nearest].y;                          // Ending Y
+            
+            // Horizontal corridor first
+            int corridor_x_start = (x1 < x2) ? x1 : x2;        // Start from left
+            int corridor_x_end = (x1 < x2) ? x2 : x1;          // End at right
+            for (int x = corridor_x_start; x < corridor_x_end; x++) {
+                if (g_world_map[y1][x] != 0) {                 // If not already floor
+                    g_world_map[y1][x] = 0;                    // Carve corridor
+                }
+            }
+            
+            // Vertical corridor second
+            int corridor_y_start = (y1 < y2) ? y1 : y2;        // Start from top
+            int corridor_y_end = (y1 < y2) ? y2 : y1;          // End at bottom
+            for (int y = corridor_y_start; y < corridor_y_end; y++) {
+                if (g_world_map[y][x2] != 0) {                 // If not already floor
+                    g_world_map[y][x2] = 0;                    // Carve corridor
+                }
             }
         }
     }
     
-    // Add obstacles in open areas (create puzzle sections)
-    for (int i = 0; i < 50; i++) {                              // Place 50 obstacles
-        int x = 50 + (rand() % (WORLD_WIDTH - 100));           // Random X (avoid edges)
-        int y = 50 + (rand() % (WORLD_HEIGHT - 100));          // Random Y (avoid edges)
-        int w = 5 + (rand() % 15);                              // Width 5-20 units
-        int h = 5 + (rand() % 15);                              // Height 5-20 units
+    // Add obstacles in open areas (create puzzle sections) - fewer and less dense
+    for (int i = 0; i < 30; i++) {                              // Place 30 obstacles (reduced)
+        int x = 80 + (rand() % (WORLD_WIDTH - 160));           // Random X (avoid edges)
+        int y = 80 + (rand() % (WORLD_HEIGHT - 160));          // Random Y (avoid edges)
+        int w = 3 + (rand() % 8);                               // Smaller obstacles 3-10 units
+        int h = 3 + (rand() % 8);                               // Smaller obstacles 3-10 units
         
-        // Carve obstacle shape into map
+        // Place obstacle shape into map
         for (int yy = y - h/2; yy < y + h/2; yy++) {
             for (int xx = x - w/2; xx < x + w/2; xx++) {
                 if (xx >= 0 && xx < WORLD_WIDTH && yy >= 0 && yy < WORLD_HEIGHT) {
-                    if (rand() % 2) {                           // 50% chance per block
+                    if (rand() % 4 == 0) {                      // 25% chance per block (less dense)
                         g_world_map[yy][xx] = 1;               // Place wall block
                     }
                 }
@@ -532,7 +608,7 @@ void game_init(void) {
     g_player.pos.x = 256.0;                                       // Center X coordinate
     g_player.pos.y = 256.0;                                       // Center Y coordinate
     g_player.pos.z = 1.0;                                         // Eye height 1.0 unit
-    g_player.health = 100.0;                                      // Full health
+    g_player.health = 350.0;                                      // Full health (350 HP)
     g_player.max_health = 100.0;                                  // Max capacity
     
     // Load textures with fallback
@@ -984,11 +1060,13 @@ void game_update(void) {
             e->attack_timer -= dt;
         }
         
-        // Attack player if close - shoot projectiles with inaccuracy
+        // Attack player if close AND has line of sight - shoot projectiles with inaccuracy
         double attack_range = 60.0;
         if (e->type == 2) attack_range = 80.0;  // Boss can shoot from further
         
-        if (dist < attack_range && e->attack_timer <= 0.0) {
+        int can_see_player = has_line_of_sight(e->pos.x, e->pos.y, g_player.pos.x, g_player.pos.y);
+        
+        if (dist < attack_range && can_see_player && e->attack_timer <= 0.0) {
             // Determine attack parameters based on type
             double inaccuracy_amount = 0.3;  // Default
             double shot_speed = 20.0;
@@ -1393,13 +1471,23 @@ void game_render(uint32_t* backbuffer, int width, int height) {
         RayHit hit = raycast(g_player.pos.x, g_player.pos.y, g_player.pos.z, col_angle_yaw, pitch);
         
         if (hit.distance >= 150.0) {
-            // Deep evening orange sky
-            for (int row = 0; row < height / 2; row++) {
-                double t = (double)row / (height / 2.0);
-                uint8_t r = (uint8_t)(255.0 * (1.0 - t * 0.5));        // 255 to 127
-                uint8_t g = (uint8_t)(150.0 * (1.0 - t * 0.7));        // 150 to 45
-                uint8_t b = (uint8_t)(60.0 * (1.0 - t * 0.9));         // 60 to 6
-                backbuffer[row * width + col] = (b << 16) | (g << 8) | r;
+        // Deep dark orange sky
+        for (int row = 0; row < height / 2; row++) {
+            double t = (double)row / (height / 2.0);
+            uint8_t r = (uint8_t)(200.0 * (1.0 - t * 0.6));
+            uint8_t g = (uint8_t)(100.0 * (1.0 - t * 0.7));
+            uint8_t b = (uint8_t)(30.0 * (1.0 - t * 0.8));
+            
+            // Add cloud effect
+            double cloud_x = (double)col / (double)width;
+            double cloud_y = t;
+            double cloud_val = sin(cloud_x * 6.0 + g_tick_interval * 0.5) * 0.5 + 0.5;
+            cloud_val *= sin(cloud_y * 3.0) * 0.3 + 0.7;
+            
+            uint8_t cloud_intensity = (uint8_t)(cloud_val * 40.0);
+            r = (r + cloud_intensity > 255) ? 255 : r + cloud_intensity;
+            g = (g + (cloud_intensity / 2) > 255) ? 255 : g + (cloud_intensity / 2);
+            
             }
             // Floor
             for (int row = height / 2; row < height; row++) {
@@ -1411,9 +1499,22 @@ void game_render(uint32_t* backbuffer, int width, int height) {
         // Draw sky first (will be overwritten by sun/moon)
         for (int row = 0; row < height / 2; row++) {
             double t = (double)row / (height / 2.0);
-            uint8_t r = (uint8_t)(255.0 * (1.0 - t * 0.5));
-            uint8_t g = (uint8_t)(150.0 * (1.0 - t * 0.7));
-            uint8_t b = (uint8_t)(60.0 * (1.0 - t * 0.9));
+            // Dark orange sky at bottom, gradually darker towards top
+            uint8_t r = (uint8_t)(200.0 * (1.0 - t * 0.6));
+            uint8_t g = (uint8_t)(100.0 * (1.0 - t * 0.7));
+            uint8_t b = (uint8_t)(30.0 * (1.0 - t * 0.8));
+            
+            // Add cloud effect using sine waves
+            double cloud_x = (double)col / (double)width;
+            double cloud_y = t;
+            double cloud_val = sin(cloud_x * 6.0 + g_tick_interval * 0.5) * 0.5 + 0.5;
+            cloud_val *= sin(cloud_y * 3.0) * 0.3 + 0.7;  // Vary vertically too
+            
+            // Blend clouds into base color
+            uint8_t cloud_intensity = (uint8_t)(cloud_val * 40.0);
+            r = (r + cloud_intensity > 255) ? 255 : r + cloud_intensity;
+            g = (g + (cloud_intensity / 2) > 255) ? 255 : g + (cloud_intensity / 2);
+            
             backbuffer[row * width + col] = (b << 16) | (g << 8) | r;
         }
         
@@ -1441,10 +1542,10 @@ void game_render(uint32_t* backbuffer, int width, int height) {
         double fog_factor = (hit.distance / 150.0);  // Full fog at max distance
         if (fog_factor > 1.0) fog_factor = 1.0;
         
-        // Blend color towards sky color at distance (evening orange)
-        uint8_t fog_r = (uint8_t)(255.0 * (1.0 - fog_factor * 0.5));
-        uint8_t fog_g = (uint8_t)(150.0 * (1.0 - fog_factor * 0.7));
-        uint8_t fog_b = (uint8_t)(60.0 * (1.0 - fog_factor * 0.9));
+        // Blend color towards dark orange sky at distance
+        uint8_t fog_r = (uint8_t)(200.0 * (1.0 - fog_factor * 0.6));
+        uint8_t fog_g = (uint8_t)(100.0 * (1.0 - fog_factor * 0.7));
+        uint8_t fog_b = (uint8_t)(30.0 * (1.0 - fog_factor * 0.8));
         
         uint8_t col_r = ((color >> 0) & 0xFF);
         uint8_t col_g = ((color >> 8) & 0xFF);
@@ -1461,12 +1562,23 @@ void game_render(uint32_t* backbuffer, int width, int height) {
             backbuffer[row * width + col] = color;
         }
         
-        // Floor and ceiling
+        // Floor and ceiling - dark orange sky
         for (int row = 0; row < start_row; row++) {
             double t = (double)row / (height / 2.0);
-            uint8_t r = (uint8_t)(255.0 * (1.0 - t * 0.5));
-            uint8_t g = (uint8_t)(150.0 * (1.0 - t * 0.7));
-            uint8_t b = (uint8_t)(60.0 * (1.0 - t * 0.9));
+            uint8_t r = (uint8_t)(200.0 * (1.0 - t * 0.6));
+            uint8_t g = (uint8_t)(100.0 * (1.0 - t * 0.7));
+            uint8_t b = (uint8_t)(30.0 * (1.0 - t * 0.8));
+            
+            // Add cloud effect
+            double cloud_x = (double)col / (double)width;
+            double cloud_y = t;
+            double cloud_val = sin(cloud_x * 6.0 + g_tick_interval * 0.5) * 0.5 + 0.5;
+            cloud_val *= sin(cloud_y * 3.0) * 0.3 + 0.7;
+            
+            uint8_t cloud_intensity = (uint8_t)(cloud_val * 40.0);
+            r = (r + cloud_intensity > 255) ? 255 : r + cloud_intensity;
+            g = (g + (cloud_intensity / 2) > 255) ? 255 : g + (cloud_intensity / 2);
+            
             backbuffer[row * width + col] = (b << 16) | (g << 8) | r;
         }
         for (int row = end_row; row < height; row++) {
@@ -1538,7 +1650,10 @@ void game_render(uint32_t* backbuffer, int width, int height) {
         double dy = e->pos.y - g_player.pos.y;
         double dist = sqrt(dx * dx + dy * dy);
         
-        if (dist < 150.0 && dist > 0.5) {
+        // Only render if within range AND has line of sight (not behind walls)
+        int can_see = has_line_of_sight(g_player.pos.x, g_player.pos.y, e->pos.x, e->pos.y);
+        
+        if (dist < 150.0 && dist > 0.5 && can_see) {
             double angle_to_entity = atan2(dy, dx);
             double rel_angle = angle_to_entity - g_player.angle_yaw;
             
