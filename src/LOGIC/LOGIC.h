@@ -10,15 +10,16 @@
 #include <assert.h>
 
 #define TARGET_FPS 165                 // Target frame rate in Hz
-#define WORLD_WIDTH 256                // World map width in tiles
-#define WORLD_HEIGHT 256               // World map height in tiles
+#define WORLD_WIDTH 512                // Huge world map width in tiles (512x512)
+#define WORLD_HEIGHT 512               // Huge world map height in tiles (4x bigger)
 #define SCREEN_WIDTH 640               // Screen width in pixels
 #define SCREEN_HEIGHT 480              // Screen height in pixels
-#define MAX_ENTITIES 64                // Maximum enemies that can exist
-#define MAX_PROJECTILES 256            // Maximum bullets in flight
+#define MAX_ENTITIES 256               // Maximum enemies (more for bigger map)
+#define MAX_PROJECTILES 512            // Maximum bullets in flight (double)
 #define MAX_TEXTURES 3                 // Maximum entity texture types
-#define TEXTURE_MAX_WIDTH 128          // Maximum texture width in pixels
-#define TEXTURE_MAX_HEIGHT 128         // Maximum texture height in pixels
+#define TEXTURE_MAX_WIDTH 256          // Maximum texture width in pixels
+#define TEXTURE_MAX_HEIGHT 256         // Maximum texture height in pixels
+#define MEMORY_POOL_SIZE (512 * 1024 * 1024)  // 512 MiB for all game assets
 
 // 3D vector
 typedef struct {
@@ -90,13 +91,14 @@ extern int g_projectile_count;
 extern Texture g_textures[MAX_TEXTURES];   // Textures for normal, red, boss entities
 extern double g_spawn_timer;               // Timer for spawning new enemies every 5 seconds
 
-// Core functions
-void clock_init(void);
-int clock_tick(void);
-void game_update(void);
-void game_render(uint32_t* backbuffer, int width, int height);
-void game_init(void);
-void game_cleanup(void);
+// Core game functions
+void clock_init(void);                    // Initialize high-resolution timer
+int clock_tick(void);                     // Check if frame time has elapsed
+void game_update(void);                   // Physics, logic, enemy AI
+void game_render(uint32_t* backbuffer, int width, int height);  // 3D raycasting render
+void game_init(void);                     // Initialize game state and load assets
+void game_cleanup(void);                  // Free all dynamic memory
+void init(void);                          // Initialize memory pool (from init.c)
 
 // Gameplay functions
 void player_shoot(void);
